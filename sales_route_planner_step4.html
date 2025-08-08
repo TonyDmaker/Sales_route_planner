@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Sales Route Planner — Step 4</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+    .panel {
+      position: absolute; z-index: 1000; background: rgba(255,255,255,0.95);
+      border-radius: 10px; padding: 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15); font-size: 14px;
+    }
+    .legend { top: 10px; left: 10px; }
+    .toolbar { top: 10px; right: 10px; }
+    .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    .swatch { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #0002; }
+    .btn {
+      display: inline-block; padding: 6px 10px; margin: 2px 4px 2px 0; border: 1px solid #ddd; border-radius: 6px;
+      background: #f7f7f7; cursor: pointer; user-select: none;
+    }
+    .btn.active { background: #e5f1ff; border-color: #b3d2ff; }
+    .popup-form label { display:block; margin: 6px 0 2px; font-weight: 600; }
+    .popup-form input, .popup-form select, .popup-form textarea {
+      width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;
+    }
+    .popup-actions { display:flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .marker-dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5); }
+    .hint {
+      position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+      background: rgba(0,0,0,0.75); color:white; padding:6px 10px; border-radius:8px; font-size:12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel legend">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><span class="swatch" style="background:#666;"></span> Not visited</div>
+    <div class="row"><span class="swatch" style="background:#2ecc71;"></span> Visited</div>
+    <div class="row"><span class="swatch" style="background:#e74c3c;"></span> No soliciting</div>
+    <div class="row"><span class="swatch" style="background:#3498db;"></span> Follow-up</div>
+    <div class="row"><span class="swatch" style="background:#f1c40f;"></span> Wants to buy</div>
+  </div>
+
+  <div class="panel toolbar">
+    <div style="font-weight:700;margin-bottom:6px;">Controls</div>
+    <div class="row" style="flex-wrap:wrap;">
+      <button class="btn" id="routeAddBtn" title="Tap to add route points">Route: Add points</button>
+      <button class="btn" id="routeFinishBtn">Finish route</button>
+      <button class="btn" id="routeClearBtn">Clear route</button>
+    </div>
+    <div class="row" style="margin-top:6px;">
+      <button class="btn" id="exportBtn">Export Pins</button>
+      <button class="btn" id="importBtn">Import Pins</button>
+      <input type="file" id="importFile" accept="application/json" style="display:none;" />
+    </div>
+    <div style="margin-top:6px;font-size:12px;color:#444;">
+      Long‑press (hold ~600ms) to drop a pin. Tap while “Route: Add points” is active to add route vertices.
+    </div>
+  </div>
+
+  <div id="hint" class="hint" style="display:none;">Long‑press to add a pin</div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // ===== Constants & Utilities =====
+    const STATUS = {
+      NOT_VISITED: { label: 'Not visited', color: '#666666' },
+      VISITED: { label: 'Visited', color: '#2ecc71' },
+      NO_SOLICITING: { label: 'No soliciting', color: '#e74c3c' },
+      FOLLOW_UP: { label: 'Follow-up', color: '#3498db' },
+      WANTS_TO_BUY: { label: 'Wants to buy', color: '#f1c40f' }
+    };
+    const STORAGE_PINS = 'srp_pins_v2';
+    const STORAGE_ROUTE = 'srp_route_v1';
+    const LONG_PRESS_MS = 600;
+    const MOVE_TOLERANCE_PX = 6;
+    const AUTO_VISIT_DIST_M = 35; // how far from route a house can be to count as traversed
+
+    function makeDot(color) {
+      return L.divIcon({ className: 'custom-dot',
+        html: '<div class="marker-dot" style="background:'+color+'"></div>',
+        iconSize: [16,16], iconAnchor: [8,8], popupAnchor: [0,-8]
+      });
+    }
+    function newId() { return 'p_' + Date.now() + '_' + Math.floor(Math.random()*1e6); }
+    function escapeHtml(str){return (str||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+
+    // Haversine distance in meters
+    function distM(a,b){
+      const R = 6371000, toRad = d=>d*Math.PI/180;
+      const dLat = toRad(b.lat-a.lat), dLng = toRad(b.lng-a.lng);
+      const s1 = Math.sin(dLat/2), s2 = Math.sin(dLng/2);
+      const A = s1*s1 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2;
+      return 2*R*Math.asin(Math.sqrt(A));
+    }
+
+    // Project point P onto polyline (array of LatLng). Returns {ok, segIndex, proj, alongM, perpM}
+    function projectPointToPolyline(P, line){
+      if(!line || line.length<2) return {ok:false};
+      let best = {ok:false, perpM: Infinity, alongM:0, segIndex:-1, proj:null};
+      let cum=0;
+      for(let i=0;i<line.length-1;i++){
+        const A=line[i], B=line[i+1];
+        const res = projectPointToSegment(P,A,B,cum);
+        if(res.perpM < best.perpM){
+          best = res;
+        }
+        cum = res.cumNext;
+      }
+      return best;
+    }
+    // Helper: projection to segment using planar approximation via Leaflet points (good for short spans)
+    function projectPointToSegment(P,A,B,cumBefore){
+      const mapA = map.latLngToLayerPoint(A);
+      const mapB = map.latLngToLayerPoint(B);
+      const mapP = map.latLngToLayerPoint(P);
+      const AB = {x: mapB.x-mapA.x, y: mapB.y-mapA.y};
+      const AP = {x: mapP.x-mapA.x, y: mapP.y-mapA.y};
+      const ab2 = AB.x*AB.x+AB.y*AB.y;
+      let t = ab2===0 ? 0 : (AP.x*AB.x+AP.y*AB.y)/ab2;
+      t = Math.max(0, Math.min(1, t));
+      const projPointPx = {x: mapA.x + t*AB.x, y: mapA.y + t*AB.y};
+      const projLatLng = map.layerPointToLatLng(projPointPx);
+      const segLenM = distM(A,B);
+      const perpM = distM(P, projLatLng);
+      const alongM = cumBefore + segLenM * t;
+      return {ok:true, segIndex: segLenM===0 ? -1 : 0, proj: projLatLng, perpM, alongM, cumNext: cumBefore + segLenM};
+    }
+
+    // ===== Map Init =====
+    const map = L.map('map').fitWorld();
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
+    map.locate({ setView:true, maxZoom:18 });
+    map.on('locationfound', e => {
+      if(!youAreHere){ youAreHere = L.marker(e.latlng).addTo(map).bindPopup('You are here'); }
+    });
+    map.on('locationerror', e => console.warn(e.message));
+
+    // ===== Data =====
+    const pins = new Map(); // id -> pin object + _marker + _chain (alongM at closest route point)
+    let youAreHere = null;
+
+    // ===== Route state =====
+    let routePoints = loadRoute();
+    let routePoly = null;
+    let progressPoly = null;
+    let routeCumLengths = []; // cumulative meters at each vertex
+    let routeFinished = routePoints.length>1;
+
+    // Render route if present
+    function renderRoute(){
+      if(routePoly) { map.removeLayer(routePoly); routePoly=null; }
+      if(progressPoly) { map.removeLayer(progressPoly); progressPoly=null; }
+      if(routePoints.length<2) return;
+      routePoly = L.polyline(routePoints, {color:'#8e44ad', weight:5, opacity:0.7}).addTo(map);
+      progressPoly = L.polyline([], {color:'#27ae60', weight:6, opacity:0.8}).addTo(map);
+      // precompute cumulative lengths
+      routeCumLengths = [0];
+      for(let i=0;i<routePoints.length-1;i++){
+        routeCumLengths.push(routeCumLengths[i] + distM(routePoints[i], routePoints[i+1]));
+      }
+      // recompute each pin's closest chain position
+      recomputePinProjections();
+      saveRoute();
+    }
+
+    function recomputePinProjections(){
+      pins.forEach(p=>{
+        if(routePoints.length<2){ p._chain = null; return; }
+        const proj = projectPointToPolyline({lat:p.lat,lng:p.lng}, routePoints);
+        p._chain = proj.ok ? { alongM: proj.alongM, perpM: proj.perpM } : null;
+      });
+    }
+
+    function saveRoute(){ localStorage.setItem(STORAGE_ROUTE, JSON.stringify(routePoints)); }
+    function loadRoute(){ try{ return JSON.parse(localStorage.getItem(STORAGE_ROUTE)||'[]'); }catch{ return []; } }
+
+    // ===== Pins: persistence & UI =====
+    function savePins(){ localStorage.setItem(STORAGE_PINS, JSON.stringify(Array.from(pins.values()).map(({_marker,_chain,...rest})=>rest))); }
+    function loadPins(){ try{ return JSON.parse(localStorage.getItem(STORAGE_PINS)||'[]'); }catch{ return []; } }
+
+    function markerPopupHtml(p){
+      return `
+        <div class="popup-form">
+          <label>Label</label>
+          <input type="text" id="title_${p.id}" value="${escapeHtml(p.title||'')}" placeholder="e.g., 123 Main St"/>
+          <label>Status</label>
+          <select id="status_${p.id}">
+            ${Object.keys(STATUS).map(k=>`<option value="${k}" ${p.status===k?'selected':''}>${STATUS[k].label}</option>`).join('')}
+          </select>
+          <label>Notes</label>
+          <textarea id="notes_${p.id}" rows="3">${escapeHtml(p.notes||'')}</textarea>
+          <label><input type="checkbox" id="keep_${p.id}" ${p.keepUnvisited?'checked':''}/> Keep as Unvisited (don’t auto-change)</label>
+          <div class="popup-actions">
+            <button class="btn" data-action="save" data-id="${p.id}">Save</button>
+            <button class="btn" data-action="visited" data-id="${p.id}">Mark Visited</button>
+            <button class="btn" data-action="delete" data-id="${p.id}" style="background:#ffecec;">Delete</button>
+          </div>
+        </div>`;
+    }
+    function attachPopupHandlers(marker,p){
+      const el = marker.getPopup().getElement(); if(!el) return;
+      el.querySelectorAll('button[data-action]').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          const action = btn.getAttribute('data-action');
+          if(action==='save'){
+            p.title = el.querySelector('#title_'+p.id).value.trim();
+            p.status = el.querySelector('#status_'+p.id).value;
+            p.notes = el.querySelector('#notes_'+p.id).value.trim();
+            p.keepUnvisited = el.querySelector('#keep_'+p.id).checked;
+            updateMarker(p); savePins();
+            marker.setPopupContent(markerPopupHtml(p)); attachPopupHandlers(marker,p);
+          } else if(action==='visited'){
+            p.status='VISITED'; updateMarker(p); savePins();
+            marker.setPopupContent(markerPopupHtml(p)); attachPopupHandlers(marker,p);
+          } else if(action==='delete'){
+            map.removeLayer(marker); pins.delete(p.id); savePins();
+          }
+        });
+      });
+    }
+    function createMarker(p){
+      const m = L.marker([p.lat,p.lng], {icon: makeDot(STATUS[p.status]?.color || STATUS.NOT_VISITED.color)});
+      m.bindPopup(markerPopupHtml(p));
+      m.on('popupopen',()=>attachPopupHandlers(m,p));
+      p._marker = m; m.addTo(map);
+    }
+    function updateMarker(p){ if(p._marker){ p._marker.setIcon(makeDot(STATUS[p.status]?.color || STATUS.NOT_VISITED.color)); } }
+
+    // Load pins on start
+    loadPins().forEach(obj=>{ const p={...obj}; pins.set(p.id,p); createMarker(p); });
+    // Render route if any
+    renderRoute();
+
+    // ===== Long‑press to add pin =====
+    let pressTimer=null, pressStartLL=null, moved=false;
+    function startPress(latlng){
+      clearTimeout(pressTimer); moved=false; pressStartLL = latlng;
+      pressTimer = setTimeout(()=>{
+        const p = { id:newId(), lat:latlng.lat, lng:latlng.lng, title:'', notes:'', status:'NOT_VISITED', keepUnvisited:false };
+        pins.set(p.id,p); createMarker(p); savePins(); recomputePinProjections();
+        p._marker.openPopup();
+      }, LONG_PRESS_MS);
+    }
+    function cancelPress(){ clearTimeout(pressTimer); pressTimer=null; }
+    map.on('mousedown', e=>{ if(routeAddMode) return; startPress(e.latlng); });
+    map.on('mousemove', ()=>{ moved=true; if(moved) cancelPress(); });
+    map.on('mouseup', ()=>{ cancelPress(); });
+    map.on('touchstart', e=>{
+      if(routeAddMode) return;
+      const touch = e.originalEvent.touches[0]; if(!touch) return;
+      const pt = map.mouseEventToContainerPoint(touch);
+      const latlng = map.containerPointToLatLng(pt);
+      startPress(latlng);
+    }, {passive:true});
+    map.on('touchmove', ()=>{ moved=true; cancelPress(); }, {passive:true});
+    map.on('touchend', ()=>{ cancelPress(); });
+
+    // Show hint briefly
+    (function(){ const h=document.getElementById('hint'); h.style.display='block'; setTimeout(()=>h.style.display='none', 3000); })();
+
+    // ===== Route building =====
+    let routeAddMode = false;
+    document.getElementById('routeAddBtn').addEventListener('click', ()=>{
+      routeAddMode = !routeAddMode;
+      document.getElementById('routeAddBtn').classList.toggle('active', routeAddMode);
+    });
+    document.getElementById('routeFinishBtn').addEventListener('click', ()=>{
+      routeFinished = true; renderRoute();
+    });
+    document.getElementById('routeClearBtn').addEventListener('click', ()=>{
+      routePoints = []; renderRoute();
+    });
+
+    map.on('click', e=>{
+      if(!routeAddMode) return;
+      routePoints.push(e.latlng); renderRoute();
+    });
+
+    // ===== Export/Import Pins =====
+    document.getElementById('exportBtn').addEventListener('click', ()=>{
+      const data = JSON.stringify(Array.from(pins.values()).map(({_marker,_chain,...rest})=>rest), null, 2);
+      const blob = new Blob([data], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download='sales_route_pins.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+    document.getElementById('importBtn').addEventListener('click', ()=>document.getElementById('importFile').click());
+    document.getElementById('importFile').addEventListener('change', ev=>{
+      const file = ev.target.files[0]; if(!file) return;
+      const r = new FileReader(); r.onload = ()=>{
+        try{
+          const arr = JSON.parse(r.result);
+          pins.forEach(p=>{ if(p._marker) map.removeLayer(p._marker); });
+          pins.clear();
+          arr.forEach(obj=>{ const p={...obj, id: obj.id||newId()}; pins.set(p.id,p); createMarker(p); });
+          savePins(); recomputePinProjections();
+        } catch(err){ alert('Import failed: '+err.message); }
+      }; r.readAsText(file);
+    });
+
+    // ===== Live tracking & auto-mark visited =====
+    let userAlongM = 0;
+    if(navigator.geolocation){
+      navigator.geolocation.watchPosition(pos=>{
+        const latlng = {lat:pos.coords.latitude, lng:pos.coords.longitude};
+        if(youAreHere){ youAreHere.setLatLng(latlng); } else { youAreHere = L.marker(latlng).addTo(map).bindPopup('You are here'); }
+        if(routePoints.length>=2){
+          const proj = projectPointToPolyline(latlng, routePoints);
+          if(proj.ok){
+            userAlongM = proj.alongM;
+            updateProgressPolyline(userAlongM);
+            pins.forEach(p=>{
+              if(p.status==='VISITED' || p.keepUnvisited) return;
+              if(!p._chain) return;
+              if(p._chain.perpM <= AUTO_VISIT_DIST_M && userAlongM >= p._chain.alongM){
+                p.status='VISITED'; updateMarker(p); savePins();
+              }
+            });
+          }
+        }
+      }, err=>console.warn(err), {enableHighAccuracy:true, maximumAge:5000, timeout:10000});
+    }
+
+    function updateProgressPolyline(alongM){
+      if(!routePoints || routePoints.length<2 || !progressPoly){ return; }
+      const out = [];
+      let remaining = alongM;
+      for(let i=0;i<routePoints.length-1;i++){
+        const A = routePoints[i], B = routePoints[i+1];
+        const segLen = distM(A,B);
+        if(remaining <= 0){ break; }
+        if(remaining >= segLen){
+          if(out.length===0) out.push(A);
+          out.push(B);
+          remaining -= segLen;
+        } else {
+          if(out.length===0) out.push(A);
+          const t = remaining/segLen;
+          const pPxA = map.latLngToLayerPoint(A);
+          const pPxB = map.latLngToLayerPoint(B);
+          const pPx = {x: pPxA.x + t*(pPxB.x-pPxA.x), y: pPxA.y + t*(pPxB.y-pPxA.y)};
+          out.push(map.layerPointToLatLng(pPx));
+          remaining = 0; break;
+        }
+      }
+      progressPoly.setLatLngs(out);
+    }
+
+    // Recompute projections whenever route changes or zoom affects pixel math
+    map.on('zoomend', ()=>{ if(routePoints.length>=2) recomputePinProjections(); });
+  </script>
+</body>
+</html>
