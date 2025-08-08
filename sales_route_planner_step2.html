@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Sales Route Planner — Step 2</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+    .legend {
+      position: absolute; top: 10px; left: 10px; z-index: 1000;
+      background: rgba(255,255,255,0.95); border-radius: 10px; padding: 10px; font-family: sans-serif; font-size: 14px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    .legend h3 { margin: 0 0 6px 0; font-size: 14px; }
+    .legend .row { display: flex; align-items: center; margin: 4px 0; }
+    .swatch {
+      width: 14px; height: 14px; border-radius: 50%; display: inline-block; margin-right: 8px; border: 1px solid #3333;
+    }
+    .toolbar {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: rgba(255,255,255,0.95); border-radius: 10px; padding: 10px; font-family: sans-serif; font-size: 14px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    .btn {
+      display: inline-block; padding: 6px 10px; margin: 2px; border: 1px solid #ddd; border-radius: 6px; background: #f7f7f7; cursor: pointer;
+    }
+    .btn:active { transform: translateY(1px); }
+    .filters label { display: block; margin: 4px 0; }
+    .popup-form label { display:block; margin: 6px 0 2px; font-weight: 600; }
+    .popup-form input, .popup-form select, .popup-form textarea {
+      width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;
+    }
+    .popup-actions { display:flex; gap: 8px; margin-top: 8px; }
+    .marker-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid white;
+      box-shadow: 0 0 3px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="legend">
+    <h3>Legend</h3>
+    <div class="row"><span class="swatch" style="background:#666;"></span> Not visited</div>
+    <div class="row"><span class="swatch" style="background:#2ecc71;"></span> Visited</div>
+    <div class="row"><span class="swatch" style="background:#e74c3c;"></span> No soliciting</div>
+    <div class="row"><span class="swatch" style="background:#3498db;"></span> Follow-up</div>
+    <div class="row"><span class="swatch" style="background:#f1c40f;"></span> Wants to buy</div>
+  </div>
+
+  <div class="toolbar">
+    <div style="font-weight:600; margin-bottom:6px;">Filters</div>
+    <div class="filters">
+      <label><input type="checkbox" data-filter="NOT_VISITED" checked> Not visited</label>
+      <label><input type="checkbox" data-filter="VISITED" checked> Visited</label>
+      <label><input type="checkbox" data-filter="NO_SOLICITING" checked> No soliciting</label>
+      <label><input type="checkbox" data-filter="FOLLOW_UP" checked> Follow-up</label>
+      <label><input type="checkbox" data-filter="WANTS_TO_BUY" checked> Wants to buy</label>
+    </div>
+    <div style="margin-top:8px;">
+      <button class="btn" id="exportBtn">Export</button>
+      <button class="btn" id="importBtn">Import</button>
+    </div>
+    <input type="file" id="importFile" accept="application/json" style="display:none;" />
+  </div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // === Status colors ===
+    const STATUS = {
+      NOT_VISITED: { label: 'Not visited', color: '#666666' },
+      VISITED: { label: 'Visited', color: '#2ecc71' },
+      NO_SOLICITING: { label: 'No soliciting', color: '#e74c3c' },
+      FOLLOW_UP: { label: 'Follow-up', color: '#3498db' },
+      WANTS_TO_BUY: { label: 'Wants to buy', color: '#f1c40f' }
+    };
+
+    // Util: colored dot icons as DivIcons
+    function makeDot(color) {
+      return L.divIcon({
+        className: 'custom-dot',
+        html: '<div class="marker-dot" style="background:' + color + '"></div>',
+        iconSize: [16,16],
+        iconAnchor: [8,8],
+        popupAnchor: [0,-8]
+      });
+    }
+
+    // === Persistence ===
+    const STORAGE_KEY = 'srp_pins_v1';
+    const pins = new Map(); // id -> {id, lat, lng, title, notes, status, keepUnvisited}
+
+    function saveAll() {
+      const arr = Array.from(pins.values());
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
+    }
+
+    function loadAll() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return [];
+        return JSON.parse(raw);
+      } catch (e) {
+        console.error('Failed to load stored pins', e);
+        return [];
+      }
+    }
+
+    // === Map init ===
+    const map = L.map('map').fitWorld();
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    map.locate({ setView: true, maxZoom: 18 });
+    map.on('locationfound', (e) => {
+      L.marker(e.latlng).addTo(map).bindPopup('You are here');
+    });
+    map.on('locationerror', (e) => {
+      console.warn(e.message);
+    });
+
+    // === Filters ===
+    const filters = new Set(['NOT_VISITED','VISITED','NO_SOLICITING','FOLLOW_UP','WANTS_TO_BUY']);
+    document.querySelectorAll('.filters input[type=checkbox]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const key = cb.getAttribute('data-filter');
+        if (cb.checked) filters.add(key); else filters.delete(key);
+        // re-render visibility
+        pins.forEach(p => {
+          if (p._marker) {
+            if (filters.has(p.status)) {
+              p._marker.addTo(map);
+            } else {
+              map.removeLayer(p._marker);
+            }
+          }
+        });
+      });
+    });
+
+    // === Marker creation ===
+    function newId() { return 'p_' + Date.now() + '_' + Math.floor(Math.random()*1e6); }
+
+    function createMarker(p) {
+      const icon = makeDot(STATUS[p.status]?.color || STATUS.NOT_VISITED.color);
+      const m = L.marker([p.lat, p.lng], { icon });
+      const popupHtml = markerPopupHtml(p);
+      m.bindPopup(popupHtml);
+      m.on('popupopen', () => attachPopupHandlers(m, p));
+      p._marker = m;
+      if (filters.has(p.status)) m.addTo(map);
+      return m;
+    }
+
+    function markerPopupHtml(p) {
+      return `
+        <div class="popup-form">
+          <label>Label</label>
+          <input type="text" id="title_${p.id}" value="${escapeHtml(p.title || '')}" placeholder="e.g., 123 Main St" />
+          <label>Status</label>
+          <select id="status_${p.id}">
+            ${Object.keys(STATUS).map(k => `<option value="${k}" ${p.status===k?'selected':''}>${STATUS[k].label}</option>`).join('')}
+          </select>
+          <label>Notes</label>
+          <textarea id="notes_${p.id}" rows="3" placeholder="Dogs, gate code, no soliciting, follow-up needs, etc.">${escapeHtml(p.notes || '')}</textarea>
+          <label><input type="checkbox" id="keep_${p.id}" ${p.keepUnvisited?'checked':''}/> Keep as Unvisited (don’t auto-change)</label>
+          <div class="popup-actions">
+            <button class="btn" data-action="save" data-id="${p.id}">Save</button>
+            <button class="btn" data-action="visited" data-id="${p.id}">Mark Visited</button>
+            <button class="btn" data-action="delete" data-id="${p.id}" style="background:#ffecec;">Delete</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function attachPopupHandlers(marker, p) {
+      const container = marker.getPopup().getElement();
+      if (!container) return;
+      container.querySelectorAll('button[data-action]').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+          const action = btn.getAttribute('data-action');
+          if (action === 'save') {
+            const title = container.querySelector('#title_' + p.id).value.trim();
+            const status = container.querySelector('#status_' + p.id).value;
+            const notes = container.querySelector('#notes_' + p.id).value.trim();
+            const keep = container.querySelector('#keep_' + p.id).checked;
+            p.title = title; p.status = status; p.notes = notes; p.keepUnvisited = keep;
+            updateMarkerAppearance(p);
+            saveAll();
+            marker.setPopupContent(markerPopupHtml(p));
+            attachPopupHandlers(marker, p);
+          } else if (action === 'visited') {
+            p.status = 'VISITED';
+            updateMarkerAppearance(p);
+            saveAll();
+            marker.setPopupContent(markerPopupHtml(p));
+            attachPopupHandlers(marker, p);
+          } else if (action === 'delete') {
+            map.removeLayer(marker);
+            pins.delete(p.id);
+            saveAll();
+          }
+        });
+      });
+    }
+
+    function updateMarkerAppearance(p) {
+      if (!p._marker) return;
+      const icon = makeDot(STATUS[p.status]?.color || STATUS.NOT_VISITED.color);
+      p._marker.setIcon(icon);
+      // toggle visibility based on filters
+      if (filters.has(p.status)) {
+        p._marker.addTo(map);
+      } else {
+        map.removeLayer(p._marker);
+      }
+    }
+
+    // === Click to add pin ===
+    map.on('click', (e) => {
+      const p = { id: newId(), lat: e.latlng.lat, lng: e.latlng.lng, title: '', notes: '', status: 'NOT_VISITED', keepUnvisited: false };
+      pins.set(p.id, p);
+      const marker = createMarker(p);
+      marker.openPopup();
+      saveAll();
+    });
+
+    // === Load existing pins ===
+    loadAll().forEach(obj => {
+      const p = { ...obj };
+      pins.set(p.id, p);
+      createMarker(p);
+    });
+
+    // === Export/Import JSON ===
+    document.getElementById('exportBtn').addEventListener('click', () => {
+      const data = JSON.stringify(Array.from(pins.values()).map(({_marker, ...rest}) => rest), null, 2);
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'sales_route_pins.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+
+    document.getElementById('importBtn').addEventListener('click', () => {
+      document.getElementById('importFile').click();
+    });
+    document.getElementById('importFile').addEventListener('change', (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const arr = JSON.parse(reader.result);
+          // Clear existing
+          pins.forEach(p => { if (p._marker) map.removeLayer(p._marker); });
+          pins.clear();
+          arr.forEach(obj => {
+            const p = { ...obj, id: obj.id || newId() };
+            pins.set(p.id, p);
+            createMarker(p);
+          });
+          saveAll();
+        } catch (e) {
+          alert('Import failed: ' + e.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    // === Helpers ===
+    function escapeHtml(str) {
+      return (str || '').replace(/[&<>"']/g, function(m) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m]);
+      });
+    }
+  </script>
+</body>
+</html>
