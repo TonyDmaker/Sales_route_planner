@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Sales Route Planner — Modular Build</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+    .panel {
+      position: absolute; z-index: 1000; background: rgba(255,255,255,0.96);
+      border-radius: 12px; padding: 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15); font-size: 14px;
+    }
+    .legend { top: 10px; left: 10px; }
+    .toolbar { top: 10px; right: 10px; width: 270px; max-width: 90vw; }
+    .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    .swatch { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #0002; }
+    .btn {
+      display: inline-block; padding: 6px 10px; margin: 2px 4px 2px 0; border: 1px solid #ddd; border-radius: 8px;
+      background: #f7f7f7; cursor: pointer; user-select: none;
+    }
+    .btn.active { background: #e5f1ff; border-color: #b3d2ff; }
+    .section-title { font-weight:700; margin-top:8px; }
+    .popup-form label { display:block; margin: 6px 0 2px; font-weight: 600; }
+    .popup-form input, .popup-form select, .popup-form textarea {
+      width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;
+    }
+    .popup-actions { display:flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .marker-dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5); }
+    .hint {
+      position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+      background: rgba(0,0,0,0.75); color:white; padding:6px 10px; border-radius:8px; font-size:12px;
+    }
+    /* Palette */
+    .palette {
+      position: absolute; z-index: 1100; background: white; border-radius: 12px; padding: 8px;
+      display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.25); border: 1px solid #0001;
+    }
+    .palette .color {
+      width: 34px; height: 34px; border-radius: 50%; border: 2px solid white;
+      box-shadow: 0 0 4px rgba(0,0,0,0.2); margin: 6px; display: inline-block;
+    }
+    .palette .color.selected { outline: 3px solid rgba(0,0,0,0.25); }
+    .flex { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel legend" id="legendPanel">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><span class="swatch" style="background:#666;"></span> Not visited</div>
+    <div class="row"><span class="swatch" style="background:#2ecc71;"></span> Visited</div>
+    <div class="row"><span class="swatch" style="background:#e74c3c;"></span> No soliciting</div>
+    <div class="row"><span class="swatch" style="background:#3498db;"></span> Follow-up</div>
+    <div class="row"><span class="swatch" style="background:#f1c40f;"></span> Wants to buy</div>
+  </div>
+
+  <div class="panel toolbar">
+    <div style="font-weight:700;margin-bottom:6px;">Settings</div>
+    <div class="section-title">Feature toggles</div>
+    <label><input type="checkbox" id="tglLongPress" checked> Long‑press to place pin</label>
+    <label><input type="checkbox" id="tglRoute" checked> Route tools (add/finish/clear)</label>
+    <label><input type="checkbox" id="tglProgress" checked> Show progress coloring along route</label>
+    <label><input type="checkbox" id="tglAutoVisit" checked> Auto‑mark pins visited when route passes</label>
+    <label><input type="checkbox" id="tglLegend" checked> Show legend</label>
+    <label><input type="checkbox" id="tglTapDetails" checked> Tap marker opens details popup</label>
+
+    <div class="section-title">Controls</div>
+    <div class="row flex">
+      <button class="btn" id="routeAddBtn" title="Tap to add route points">Route: Add points</button>
+      <button class="btn" id="routeFinishBtn">Finish route</button>
+      <button class="btn" id="routeClearBtn">Clear route</button>
+    </div>
+
+    <div class="section-title">Pins</div>
+    <div class="row flex">
+      <button class="btn" id="exportBtn">Export Pins</button>
+      <button class="btn" id="importBtn">Import Pins</button>
+      <input type="file" id="importFile" accept="application/json" style="display:none;" />
+      <button class="btn" id="clearPinsBtn">Clear Pins</button>
+    </div>
+
+    <div class="section-title">Thresholds</div>
+    <div class="row">Auto‑visit distance (m): <input id="autoVisitInput" type="number" min="1" max="200" value="35" style="width:70px; padding:4px;"></div>
+    <div class="row">Long‑press hold (ms): <input id="longPressInput" type="number" min="100" max="3000" value="900" style="width:70px; padding:4px;"></div>
+  </div>
+
+  <div id="hint" class="hint" style="display:none;">Long‑press, drag to a color, release to drop pin</div>
+  <div id="palette" class="palette"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // ===== Constants & Utilities =====
+    const STATUS = {
+      NOT_VISITED: { key:'NOT_VISITED', label: 'Not visited', color: '#666666' },
+      VISITED: { key:'VISITED', label: 'Visited', color: '#2ecc71' },
+      NO_SOLICITING: { key:'NO_SOLICITING', label: 'No soliciting', color: '#e74c3c' },
+      FOLLOW_UP: { key:'FOLLOW_UP', label: 'Follow-up', color: '#3498db' },
+      WANTS_TO_BUY: { key:'WANTS_TO_BUY', label: 'Wants to buy', color: '#f1c40f' }
+    };
+    const STATUS_LIST = [STATUS.NOT_VISITED, STATUS.VISITED, STATUS.NO_SOLICITING, STATUS.FOLLOW_UP, STATUS.WANTS_TO_BUY];
+
+    const STORAGE_PINS = 'srp_mod_pins_v1';
+    const STORAGE_ROUTE = 'srp_mod_route_v1';
+
+    function makeDot(color) {
+      return L.divIcon({ className: 'custom-dot',
+        html: '<div class="marker-dot" style="background:'+color+'"></div>',
+        iconSize: [16,16], iconAnchor: [8,8], popupAnchor: [0,-8]
+      });
+    }
+    function newId() { return 'p_' + Date.now() + '_' + Math.floor(Math.random()*1e6); }
+    function escapeHtml(str){return (str||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+    // Haversine
+    function distM(a,b){
+      const R = 6371000, toRad = d=>d*Math.PI/180;
+      const dLat = toRad(b.lat-a.lat), dLng = toRad(b.lng-a.lng);
+      const s1 = Math.sin(dLat/2), s2 = Math.sin(dLng/2);
+      const A = s1*s1 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2;
+      return 2*R*Math.asin(Math.sqrt(A));
+    }
+    // Projection
+    function projectPointToPolyline(P, line){
+      if(!line || line.length<2) return {ok:false};
+      let best = {ok:false, perpM: Infinity, alongM:0, segIndex:-1, proj:null};
+      let cum=0;
+      for(let i=0;i<line.length-1;i++){
+        const A=line[i], B=line[i+1];
+        const res = projectPointToSegment(P,A,B,cum);
+        if(res.perpM < best.perpM){ best = res; }
+        cum = res.cumNext;
+      }
+      return best;
+    }
+    function projectPointToSegment(P,A,B,cumBefore){
+      const mapA = map.latLngToLayerPoint(A);
+      const mapB = map.latLngToLayerPoint(B);
+      const mapP = map.latLngToLayerPoint(P);
+      const AB = {x: mapB.x-mapA.x, y: mapB.y-mapA.y};
+      const AP = {x: mapP.x-mapA.x, y: mapP.y-mapA.y};
+      const ab2 = AB.x*AB.x+AB.y*AB.y;
+      let t = ab2===0 ? 0 : (AP.x*AB.x+AP.y*AB.y)/ab2;
+      t = Math.max(0, Math.min(1, t));
+      const projPointPx = {x: mapA.x + t*AB.x, y: mapA.y + t*AB.y};
+      const projLatLng = map.layerPointToLatLng(projPointPx);
+      const segLenM = distM(A,B);
+      const perpM = distM(P, projLatLng);
+      const alongM = cumBefore + segLenM * t;
+      return {ok:true, proj: projLatLng, perpM, alongM, cumNext: cumBefore + segLenM};
+    }
+
+    // ===== Map Init =====
+    const map = L.map('map').fitWorld();
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
+    let youAreHere = null;
+    map.locate({ setView:true, maxZoom:18 });
+    map.on('locationfound', e => { if(!youAreHere){ youAreHere = L.marker(e.latlng).addTo(map).bindPopup('You are here'); } });
+
+    // ===== Data =====
+    const pins = new Map();
+    function savePins(){ localStorage.setItem(STORAGE_PINS, JSON.stringify(Array.from(pins.values()).map(({_marker,_chain,...rest})=>rest))); }
+    function loadPins(){ try{ return JSON.parse(localStorage.getItem(STORAGE_PINS)||'[]'); }catch{ return []; } }
+
+    // ===== Route =====
+    let routePoints = loadRoute();
+    let routePoly = null, progressPoly = null;
+    function saveRoute(){ localStorage.setItem(STORAGE_ROUTE, JSON.stringify(routePoints)); }
+    function loadRoute(){ try{ return JSON.parse(localStorage.getItem(STORAGE_ROUTE)||'[]'); }catch{ return []; } }
+    function renderRoute(){
+      if(routePoly){ map.removeLayer(routePoly); routePoly=null; }
+      if(progressPoly){ map.removeLayer(progressPoly); progressPoly=null; }
+      if(routePoints.length<2) return;
+      routePoly = L.polyline(routePoints, {color:'#8e44ad', weight:5, opacity:0.75}).addTo(map);
+      if(document.getElementById('tglProgress').checked){
+        progressPoly = L.polyline([], {color:'#27ae60', weight:6, opacity:0.9}).addTo(map);
+      }
+      recomputePinProjections();
+      saveRoute();
+    }
+
+    function recomputePinProjections(){
+      pins.forEach(p=>{
+        if(routePoints.length<2){ p._chain=null; return; }
+        const proj = projectPointToPolyline({lat:p.lat,lng:p.lng}, routePoints);
+        p._chain = proj.ok ? {alongM: proj.alongM, perpM: proj.perpM} : null;
+      });
+    }
+
+    // ===== Pins UI =====
+    function markerPopupHtml(p){
+      return `
+        <div class="popup-form">
+          <label>Label</label>
+          <input type="text" id="title_${p.id}" value="${escapeHtml(p.title||'')}" placeholder="e.g., 123 Main St"/>
+          <label>Status</label>
+          <select id="status_${p.id}">
+            ${STATUS_LIST.map(s=>`<option value="${s.key}" ${p.status===s.key?'selected':''}>${s.label}</option>`).join('')}
+          </select>
+          <label>Notes</label>
+          <textarea id="notes_${p.id}" rows="3">${escapeHtml(p.notes||'')}</textarea>
+          <label><input type="checkbox" id="keep_${p.id}" ${p.keepUnvisited?'checked':''}/> Keep as Unvisited (don’t auto-change)</label>
+          <div class="popup-actions">
+            <button class="btn" data-action="save" data-id="${p.id}">Save</button>
+            <button class="btn" data-action="visited" data-id="${p.id}">Mark Visited</button>
+            <button class="btn" data-action="delete" data-id="${p.id}" style="background:#ffecec;">Delete</button>
+          </div>
+        </div>`;
+    }
+    function attachPopupHandlers(marker,p){
+      const el = marker.getPopup().getElement(); if(!el) return;
+      el.querySelectorAll('button[data-action]').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          const action = btn.getAttribute('data-action');
+          if(action==='save'){
+            p.title = el.querySelector('#title_'+p.id).value.trim();
+            p.status = el.querySelector('#status_'+p.id).value;
+            p.notes = el.querySelector('#notes_'+p.id).value.trim();
+            p.keepUnvisited = el.querySelector('#keep_'+p.id).checked;
+            updateMarker(p); savePins();
+            marker.setPopupContent(markerPopupHtml(p)); attachPopupHandlers(marker,p);
+          } else if(action==='visited'){
+            p.status='VISITED'; updateMarker(p); savePins();
+            marker.setPopupContent(markerPopupHtml(p)); attachPopupHandlers(marker,p);
+          } else if(action==='delete'){
+            map.removeLayer(marker); pins.delete(p.id); savePins();
+          }
+        });
+      });
+    }
+    function createMarker(p){
+      const m = L.marker([p.lat,p.lng], {icon: makeDot((STATUS_LIST.find(s=>s.key===p.status)||STATUS.NOT_VISITED).color)});
+      if(document.getElementById('tglTapDetails').checked){
+        m.bindPopup(markerPopupHtml(p));
+        m.on('popupopen',()=>attachPopupHandlers(m,p));
+      }
+      p._marker = m; m.addTo(map);
+    }
+    function updateMarker(p){
+      if(p._marker){
+        p._marker.setIcon(makeDot((STATUS_LIST.find(s=>s.key===p.status)||STATUS.NOT_VISITED).color));
+        if(document.getElementById('tglTapDetails').checked && !p._marker.getPopup()){
+          p._marker.bindPopup(markerPopupHtml(p)); p._marker.on('popupopen',()=>attachPopupHandlers(p._marker,p));
+        }
+        if(!document.getElementById('tglTapDetails').checked && p._marker.getPopup()){
+          p._marker.unbindPopup();
+        }
+      }
+    }
+    loadPins().forEach(obj=>{ const p={...obj}; pins.set(p.id,p); createMarker(p); });
+
+    // ===== Palette for long‑press press‑and‑drag =====
+    const palette = document.getElementById('palette');
+    let paletteActive = false, paletteChoice = STATUS.NOT_VISITED.key, pressTimer=null, pressLatLng=null;
+
+    function showPalette(containerPoint){
+      palette.innerHTML = STATUS_LIST.map(s=>`<div class="color" data-key="${s.key}" style="background:${s.color}" title="${s.label}"></div>`).join('');
+      palette.style.left = (containerPoint.x - 100) + 'px';
+      palette.style.top  = (containerPoint.y - 60) + 'px';
+      palette.style.display = 'block';
+      paletteActive = true;
+      paletteChoice = STATUS.NOT_VISITED.key;
+      Array.from(palette.querySelectorAll('.color')).forEach(el=>{
+        el.addEventListener('mouseenter', ()=>selectColor(el.getAttribute('data-key')));
+      });
+    }
+    function hidePalette(){ palette.style.display='none'; paletteActive=false; }
+    function selectColor(key){
+      paletteChoice = key;
+      Array.from(palette.querySelectorAll('.color')).forEach(el=>{
+        el.classList.toggle('selected', el.getAttribute('data-key')===key);
+      });
+    }
+
+    // Long‑press handling
+    function startLongPress(latlng, containerPoint, holdMs){
+      clearTimeout(pressTimer); pressLatLng = latlng;
+      pressTimer = setTimeout(()=>{
+        showPalette(containerPoint);
+      }, holdMs);
+    }
+    function cancelLongPress(){ clearTimeout(pressTimer); }
+
+    // Map interactions
+    let routeAddMode = false;
+    const longPressInput = document.getElementById('longPressInput');
+    const autoVisitInput = document.getElementById('autoVisitInput');
+    document.getElementById('tglLegend').addEventListener('change', e=>{
+      document.getElementById('legendPanel').style.display = e.target.checked ? 'block' : 'none';
+    });
+
+    // Route buttons
+    document.getElementById('routeAddBtn').addEventListener('click', ()=>{
+      routeAddMode = !routeAddMode;
+      document.getElementById('routeAddBtn').classList.toggle('active', routeAddMode);
+    });
+    document.getElementById('routeFinishBtn').addEventListener('click', ()=>{ renderRoute(); });
+    document.getElementById('routeClearBtn').addEventListener('click', ()=>{ routePoints = []; renderRoute(); });
+
+    // Pins import/export/clear
+    document.getElementById('exportBtn').addEventListener('click', ()=>{
+      const data = JSON.stringify(Array.from(pins.values()).map(({_marker,_chain,...rest})=>rest), null, 2);
+      const blob = new Blob([data], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download='sales_route_pins.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+    document.getElementById('importBtn').addEventListener('click', ()=>document.getElementById('importFile').click());
+    document.getElementById('importFile').addEventListener('change', ev=>{
+      const file = ev.target.files[0]; if(!file) return;
+      const r = new FileReader(); r.onload = ()=>{
+        try{
+          const arr = JSON.parse(r.result);
+          pins.forEach(p=>{ if(p._marker) map.removeLayer(p._marker); });
+          pins.clear();
+          arr.forEach(obj=>{ const p={...obj, id: obj.id||newId()}; pins.set(p.id,p); createMarker(p); });
+          savePins(); recomputePinProjections();
+        } catch(err){ alert('Import failed: '+err.message); }
+      }; r.readAsText(file);
+    });
+    document.getElementById('clearPinsBtn').addEventListener('click', ()=>{
+      pins.forEach(p=>{ if(p._marker) map.removeLayer(p._marker); });
+      pins.clear(); savePins();
+    });
+
+    // Map clicks for route & long‑press
+    map.on('click', e=>{
+      if(routeAddMode && document.getElementById('tglRoute').checked){
+        routePoints.push(e.latlng); renderRoute();
+      }
+    });
+    map.on('mousedown', e=>{
+      if(!document.getElementById('tglLongPress').checked || routeAddMode) return;
+      startLongPress(e.latlng, e.containerPoint, parseInt(longPressInput.value||900,10));
+    });
+    map.on('mouseup', e=>{
+      cancelLongPress();
+      if(paletteActive){
+        const statusKey = paletteChoice || STATUS.NOT_VISITED.key;
+        const p = { id:newId(), lat:pressLatLng.lat, lng:pressLatLng.lng, title:'', notes:'', status: statusKey, keepUnvisited:false };
+        pins.set(p.id,p); createMarker(p); savePins(); recomputePinProjections();
+        hidePalette();
+      }
+    });
+    map.on('touchstart', e=>{
+      if(!document.getElementById('tglLongPress').checked || routeAddMode) return;
+      const t = e.originalEvent.touches[0]; if(!t) return;
+      const pt = map.mouseEventToContainerPoint(t);
+      const ll = map.containerPointToLatLng(pt);
+      startLongPress(ll, pt, parseInt(longPressInput.value||900,10));
+    }, {passive:true});
+    map.on('touchend', ()=>{
+      cancelLongPress();
+      if(paletteActive){
+        const statusKey = paletteChoice || STATUS.NOT_VISITED.key;
+        const p = { id:newId(), lat:pressLatLng.lat, lng:pressLatLng.lng, title:'', notes:'', status: statusKey, keepUnvisited:false };
+        pins.set(p.id,p); createMarker(p); savePins(); recomputePinProjections();
+        hidePalette();
+      }
+    });
+    map.on('movestart', ()=>{ cancelLongPress(); hidePalette(); });
+
+    // ===== Live tracking =====
+    if(navigator.geolocation){
+      navigator.geolocation.watchPosition(pos=>{
+        const latlng = {lat:pos.coords.latitude, lng:pos.coords.longitude};
+        if(youAreHere){ youAreHere.setLatLng(latlng); } else { youAreHere = L.marker(latlng).addTo(map).bindPopup('You are here'); }
+
+        if(routePoints.length>=2){
+          const proj = projectPointToPolyline(latlng, routePoints);
+          if(proj.ok){
+            if(document.getElementById('tglProgress').checked){
+              updateProgressPolyline(proj.alongM);
+            } else if(progressPoly){ progressPoly.setLatLngs([]); }
+            if(document.getElementById('tglAutoVisit').checked){
+              const distLimit = parseFloat(autoVisitInput.value||35);
+              pins.forEach(p=>{
+                if(p.status==='VISITED' || p.keepUnvisited) return;
+                if(!p._chain) return;
+                if(p._chain.perpM <= distLimit && proj.alongM >= p._chain.alongM){
+                  p.status='VISITED'; updateMarker(p); savePins();
+                }
+              });
+            }
+          }
+        }
+      }, err=>console.warn(err), {enableHighAccuracy:true, maximumAge:5000, timeout:10000});
+    }
+
+    function updateProgressPolyline(alongM){
+      if(routePoints.length<2){ return; }
+      if(!progressPoly){ progressPoly = L.polyline([], {color:'#27ae60', weight:6, opacity:0.9}).addTo(map); }
+      const out=[]; let remain=alongM;
+      for(let i=0;i<routePoints.length-1;i++){
+        const A=routePoints[i], B=routePoints[i+1]; const seg=distM(A,B);
+        if(remain<=0) break;
+        if(remain>=seg){ if(out.length===0) out.push(A); out.push(B); remain-=seg; }
+        else { if(out.length===0) out.push(A);
+          const t=remain/seg; const pA=map.latLngToLayerPoint(A), pB=map.latLngToLayerPoint(B);
+          const pX={x:pA.x+t*(pB.x-pA.x), y:pA.y+t*(pB.y-pA.y)}; out.push(map.layerPointToLatLng(pX)); break; }
+      }
+      progressPoly.setLatLngs(out);
+    }
+
+    // Initial render
+    renderRoute();
+
+    // Brief hint
+    (function(){ const h=document.getElementById('hint'); h.style.display='block'; setTimeout(()=>h.style.display='none', 3500); })();
+  </script>
+</body>
+</html>
