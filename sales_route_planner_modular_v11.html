@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Sales Route Planner — v11 (robust draw + reset)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    /* Allow normal panning/zoom. We'll override touch-action during drawing. */
+    #map { height: 100%; width: 100%; touch-action: pan-x pan-y; }
+    .panel {
+      position: absolute; z-index: 1000; background: rgba(255,255,255,0.98);
+      border-radius: 12px; padding: 12px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15); font-size: 14px;
+    }
+    .legend { top: 10px; left: 10px; }
+    .toolbar { top: 60px; right: 10px; width: 330px; max-width: 92vw; max-height: 70vh; overflow: auto; display: none; }
+    .toolbar.show { display: block; }
+    .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; flex-wrap: wrap; }
+    .btn {
+      display: inline-block; padding: 6px 10px; margin: 2px 4px 2px 0; border: 1px solid #ddd; border-radius: 8px;
+      background: #f7f7f7; cursor: pointer; user-select: none;
+    }
+    .btn.primary { background:#0ea5e9; border-color:#0ea5e9; color:#fff; }
+    .btn.warn { background:#fee2e2; border-color:#fecaca; }
+    .marker-dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5); }
+    .fab {
+      position: absolute; top: 10px; right: 10px; z-index: 1101;
+      width: 44px; height: 44px; border-radius: 50%; border: none;
+      background: #111; color: #fff; font-size: 22px; line-height: 44px; text-align: center;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.3); cursor: pointer;
+    }
+    .palette {
+      position:absolute; z-index:1100; background:#fff; border-radius:12px; padding:8px; display:none;
+      box-shadow:0 4px 12px rgba(0,0,0,0.25); border:1px solid #0001;
+    }
+    .palette .opt { width:36px; height:36px; border-radius:50%; border:2px solid #fff; display:inline-flex; align-items:center; justify-content:center; margin:6px; box-shadow:0 0 4px rgba(0,0,0,.2); }
+    .palette .selected { outline:3px solid rgba(0,0,0,0.25); }
+    .legend .row { gap: 8px; }
+    .sw { width:14px; height:14px; border-radius:50%; border:1px solid #0002; }
+    .toast { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,.65); color:#fff; padding:6px 10px; border-radius:8px; font-size:12px; display:none; z-index:1200; }
+    .hint { position:absolute; bottom:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.7); color:#fff; padding:6px 10px; border-radius:8px; font-size:12px; display:none; z-index:1200; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <button id="menuBtn" class="fab" title="Settings">☰</button>
+  <div id="toast" class="toast"></div>
+  <div id="hint" class="hint">Draw a loop around the car, lift to finish</div>
+
+  <div class="panel legend" id="legendPanel">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><div class="sw" style="background:#000;"></div> Not visited</div>
+    <div class="row"><div class="sw" style="background:#1d4ed8;"></div> Visited</div>
+    <div class="row"><div class="sw" style="background:#facc15;"></div> Follow-up</div>
+    <div class="row"><div class="sw" style="background:#16a34a;"></div> Wants to buy</div>
+    <div class="row"><div class="sw" style="background:#dc2626;"></div> No soliciting</div>
+    <div class="row"><span style="font-size:20px;">🚗</span> Car (start/end)</div>
+  </div>
+
+  <div class="panel toolbar" id="settingsPanel">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:700;">Settings</div>
+      <button class="btn" id="closeSettings">Close</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Pins</div>
+    <div class="row">
+      <button class="btn" id="exportPins">Export</button>
+      <button class="btn" id="importPins">Import</button>
+      <input type="file" id="importPinsFile" accept="application/json" style="display:none;">
+      <button class="btn" id="clearPins">Clear</button>
+      <button class="btn warn" id="resetAll">Reset all</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Car / Area</div>
+    <div class="row">
+      <button class="btn" id="setCarGPS">Set car at my GPS</button>
+      <button class="btn" id="centerCar">Center on car</button>
+      <button class="btn" id="clearCar">Clear car</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="drawPerimeterBtn">Draw perimeter</button>
+      <button class="btn" id="clearPerimeterBtn">Clear perimeter</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Route</div>
+    <div class="row">
+      <button class="btn primary" id="autorouteBtn">Auto‑route within perimeter</button>
+      <button class="btn" id="clearRouteBtn">Clear route</button>
+    </div>
+  </div>
+
+  <div id="palette" class="palette"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // ===== Utilities
+    function toast(msg,ms=900){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',ms); }
+    const map = L.map('map').fitWorld();
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+    map.locate({setView:true,maxZoom:18});
+    let you=null; map.on('locationfound',e=>{ if(!you){ you=L.marker(e.latlng).addTo(map).bindPopup('You'); } });
+
+    // Storage keys
+    const K={pins:'v11_pins', car:'v11_car', perim:'v11_perimeter', route:'v11_route'};
+
+    // ===== Pins (notes only) with your colors
+    const STATUS = {
+      NOT_VISITED:'#000000',
+      VISITED:'#1d4ed8',
+      FOLLOW_UP:'#facc15',
+      WANTS_TO_BUY:'#16a34a',
+      NO_SOLICITING:'#dc2626'
+    };
+    const COLORS = [STATUS.NOT_VISITED, STATUS.VISITED, STATUS.FOLLOW_UP, STATUS.WANTS_TO_BUY, STATUS.NO_SOLICITING];
+
+    const pins=new Map();
+    function newId(){ return 'p_'+Date.now()+'_'+Math.floor(Math.random()*1e6); }
+    function dot(color){ return L.divIcon({className:'',html:`<div class="marker-dot" style="background:${color}"></div>`,iconSize:[18,18],iconAnchor:[9,9],popupAnchor:[0,-9]}); }
+    function savePins(){ localStorage.setItem(K.pins, JSON.stringify(Array.from(pins.values()).map(p=>({id:p.id,lat:p.lat,lng:p.lng,color:p.color,title:p.title||'',notes:p.notes||''})))); }
+    function loadPins(){ try{return JSON.parse(localStorage.getItem(K.pins)||'[]')}catch{return[]} }
+    function pinPopupHtml(p){ return `<div><div style="font-weight:700;margin-bottom:6px;">House note</div>
+      <label>Label</label><input id="t_${p.id}" style="width:100%;margin:2px 0 6px;" value="${(p.title||'').replace(/"/g,'&quot;')}">
+      <label>Notes</label><textarea id="n_${p.id}" rows="3" style="width:100%;margin-top:2px;">${(p.notes||'')}</textarea>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+        ${COLORS.map(c=>`<button data-c="${c}" class="btn" style="background:${c};border-color:${c};color:#000;">&nbsp;</button>`).join('')}
+        <button class="btn" id="del_${p.id}" style="background:#fee;border-color:#fee;">Delete</button>
+      </div></div>`; }
+    function bindPinPopup(m,p){
+      m.bindPopup(pinPopupHtml(p));
+      m.on('popupopen',()=>{
+        const el=m.getPopup().getElement();
+        el.querySelectorAll('button[data-c]').forEach(b=>b.addEventListener('click',()=>{
+          p.color=b.getAttribute('data-c'); m.setIcon(dot(p.color)); savePins();
+        }));
+        el.querySelector('#del_'+p.id).addEventListener('click',()=>{ map.removeLayer(m); pins.delete(p.id); savePins(); });
+        el.querySelector('#t_'+p.id).addEventListener('input',e=>{ p.title=e.target.value; savePins(); });
+        el.querySelector('#n_'+p.id).addEventListener('input',e=>{ p.notes=e.target.value; savePins(); });
+      });
+    }
+    function addPinLL(latlng,color=STATUS.NOT_VISITED){
+      const p={id:newId(),lat:latlng.lat,lng:latlng.lng,color};
+      const m=L.marker(latlng,{icon:dot(color)}).addTo(map);
+      bindPinPopup(m,p); p._m=m; pins.set(p.id,p); savePins();
+    }
+    loadPins().forEach(o=>{ const m=L.marker([o.lat,o.lng],{icon:dot(o.color)}).addTo(map); const p={...o,_m:m}; pins.set(p.id,p); bindPinPopup(m,p); });
+
+    // ===== Car pin (bigger; long-press move; offset from finger)
+    let car=null, carMarker=null;
+    function carIcon(){ return L.divIcon({className:'',html:`<div style="font-size:26px;line-height:26px;transform:translate(-2px,-2px)">🚗</div>`,iconSize:[26,26],iconAnchor:[13,13]}); }
+    function placeCar(latlng){ if(carMarker){ map.removeLayer(carMarker); } car={lat:latlng.lat,lng:latlng.lng}; localStorage.setItem(K.car, JSON.stringify(car)); carMarker=L.marker(latlng,{icon:carIcon(),draggable:false}).addTo(map); enableCarDrag(); }
+    function loadCar(){ try{ const c=JSON.parse(localStorage.getItem(K.car)||'null'); if(c){ placeCar(c); } }catch{} }
+    loadCar();
+    function enableCarDrag(){
+      if(!carMarker) return;
+      const cont=map.getContainer(); let holdTimer=null, drag=false; const offset={x:-16,y:-24};
+      let activeId=null;
+      function onPointerDown(ev){
+        if(ev.button!==0) return;
+        if(!ev.target.closest('.leaflet-marker-icon')) return;
+        if(ev.target.closest('.leaflet-marker-icon')!==carMarker._icon) return;
+        ev.preventDefault();
+        activeId=ev.pointerId;
+        holdTimer=setTimeout(()=>{
+          drag=true;
+          map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+          cont.setPointerCapture(activeId);
+        },700);
+      }
+      function onPointerMove(ev){
+        if(ev.pointerId!==activeId) return;
+        if(!drag) return;
+        ev.preventDefault();
+        const pt=map.mouseEventToContainerPoint(ev);
+        const pinPt={x:pt.x+offset.x,y:pt.y+offset.y};
+        const ll=map.containerPointToLatLng(pinPt);
+        carMarker.setLatLng(ll);
+      }
+      function onPointerUp(ev){
+        if(ev.pointerId!==activeId) return;
+        clearTimeout(holdTimer);
+        if(drag){
+          ev.preventDefault();
+          const pt=map.mouseEventToContainerPoint(ev);
+          const pinPt={x:pt.x+offset.x,y:pt.y+offset.y};
+          const ll=map.containerPointToLatLng(pinPt);
+          placeCar(ll);
+        }
+        drag=false; activeId=null;
+        map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+      }
+      cont.addEventListener('pointerdown', onPointerDown);
+      cont.addEventListener('pointermove', onPointerMove);
+      cont.addEventListener('pointerup', onPointerUp);
+      cont.addEventListener('pointercancel', onPointerUp);
+    }
+
+    // ===== Settings menu
+    const settings=document.getElementById('settingsPanel');
+    document.getElementById('menuBtn').onclick=()=>settings.classList.toggle('show');
+    document.getElementById('closeSettings').onclick=()=>settings.classList.remove('show');
+    document.addEventListener('pointerdown', (e)=>{
+      const t=e.target; if(!(t.closest('.toolbar')||t.closest('.fab')||t.closest('.leaflet-control'))) settings.classList.remove('show');
+    }, {passive:true});
+
+    // ===== Long-press palette (notes + car)
+    const palette=document.getElementById('palette');
+    let longTimer=null, pressStartPt=null, pressLatLng=null, paletteOpen=false, selected=null;
+    function buildPalette(){
+      palette.innerHTML = ''
+        + Object.values(STATUS).map(c=>`<div class="opt" data-type="note" data-color="${c}" style="background:${c}"></div>`).join('')
+        + `<div class="opt" data-type="car" style="background:#fff;">🚗</div>`;
+    }
+    function showPalette(pt){ buildPalette(); palette.style.left=(pt.x-110)+'px'; palette.style.top=(pt.y-80)+'px'; palette.style.display='block'; paletteOpen=true; selected=null; }
+    function hidePalette(){ palette.style.display='none'; paletteOpen=false; }
+    const mapEl = map.getContainer();
+    mapEl.addEventListener('pointerdown', (ev)=>{
+      // Don't trigger from existing markers (car or pins)
+      if(ev.target.closest('.leaflet-marker-icon')) return;
+      pressStartPt=map.mouseEventToContainerPoint(ev);
+      pressLatLng=map.containerPointToLatLng(pressStartPt);
+      longTimer=setTimeout(()=>{ showPalette(pressStartPt); map.dragging.disable(); map.touchZoom.disable(); mapEl.style.touchAction='none'; },1000);
+    });
+    mapEl.addEventListener('pointermove', (ev)=>{
+      if(!longTimer && !paletteOpen) return;
+      const pt=map.mouseEventToContainerPoint(ev);
+      if(longTimer && Math.hypot(pt.x-pressStartPt.x, pt.y-pressStartPt.y)>8){ clearTimeout(longTimer); longTimer=null; }
+      if(paletteOpen){
+        const el=document.elementFromPoint(ev.clientX, ev.clientY);
+        if(el && el.classList.contains('opt')){
+          Array.from(palette.children).forEach(c=>c.classList.toggle('selected', c===el));
+          selected = el.getAttribute('data-type')==='car' ? 'car' : ('note:'+el.getAttribute('data-color'));
+          ev.preventDefault();
+        }
+      }
+    }, {passive:false});
+    function endPalette(ev){
+      if(longTimer){ clearTimeout(longTimer); longTimer=null; }
+      if(paletteOpen){
+        const choice=selected;
+        hidePalette(); map.dragging.enable(); map.touchZoom.enable(); mapEl.style.touchAction='pan-x pan-y';
+        if(choice==='car'){
+          if(you){ placeCar(you.getLatLng()); } else { placeCar(pressLatLng); }
+        } else if(choice && choice.startsWith('note:')){
+          const color=choice.split(':')[1]; addPinLL(pressLatLng, color);
+        }
+      }
+    }
+    mapEl.addEventListener('pointerup', endPalette);
+    map.on('movestart', ()=>{ if(longTimer){ clearTimeout(longTimer); longTimer=null; } hidePalette(); mapEl.style.touchAction='pan-x pan-y'; });
+
+    // ===== Perimeter drawing (robust: only when button pressed, single-pointer, capture, cancels on pinch)
+    let drawingMode=false, drawingActive=false, drawPointerId=null, perim=null, perimPts=[];
+    const perimStyle={color:'#2563eb', weight:3, opacity:0.9, fill:true, fillOpacity:0.08};
+    function drawPerim(){ if(perim){ map.removeLayer(perim); } if(perimPts.length){ perim=L.polygon(perimPts,perimStyle).addTo(map); } }
+    function savePerim(){ localStorage.setItem(K.perim, JSON.stringify(perimPts.map(ll=>({lat:ll.lat,lng:ll.lng})))); }
+    function loadPerim(){ try{ const a=JSON.parse(localStorage.getItem(K.perim)||'null'); if(a&&a.length){ perimPts=a.map(o=>L.latLng(o.lat,o.lng)); drawPerim(); } }catch{} }
+    function clearPerim(){ if(perim){ map.removeLayer(perim); perim=null; } perimPts=[]; localStorage.removeItem(K.perim); }
+    loadPerim();
+
+    document.getElementById('drawPerimeterBtn').onclick=()=>{
+      drawingMode=true; drawingActive=false; perimPts=[]; drawPerim();
+      document.getElementById('hint').style.display='block';
+      // Let the user position the map, only start on first down
+      toast('Draw perimeter: press, drag, lift to finish');
+    };
+    document.getElementById('clearPerimeterBtn').onclick=()=>{ clearPerim(); toast('Perimeter cleared'); };
+
+    let pointersDown = new Set();
+    mapEl.addEventListener('pointerdown', (ev)=>{
+      pointersDown.add(ev.pointerId);
+      if(pointersDown.size>1){
+        // Multitouch (pinch) — cancel drawing if it was running
+        if(drawingActive){
+          drawingActive=false; drawPointerId=null; mapEl.releasePointerCapture && mapEl.releasePointerCapture(ev.pointerId);
+          map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable(); mapEl.style.touchAction='pan-x pan-y';
+          document.getElementById('hint').style.display='none';
+        }
+        return; // don't start drawing on multi-touch
+      }
+      if(!drawingMode) return;
+      // Start drawing on first primary pointer
+      drawingActive=true; drawPointerId=ev.pointerId; perimPts=[ map.mouseEventToLatLng(ev) ]; drawPerim();
+      map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+      // While drawing, stop browser gestures so moves arrive
+      mapEl.style.touchAction='none';
+      // Capture this pointer
+      ev.target.setPointerCapture && ev.target.setPointerCapture(ev.pointerId);
+    }, {passive:true});
+
+    mapEl.addEventListener('pointermove', (ev)=>{
+      if(!drawingActive || ev.pointerId!==drawPointerId) return;
+      // keep sampling but thin out points to avoid massive arrays
+      const ll=map.mouseEventToLatLng(ev);
+      const last=perimPts[perimPts.length-1];
+      const dx=ll.lng-last.lng, dy=ll.lat-last.lat;
+      if(Math.hypot(dx,dy)>1e-5){ perimPts.push(ll); drawPerim(); }
+      ev.preventDefault();
+    }, {passive:false});
+
+    function finishDrawing(){
+      drawingMode=false;
+      if(perimPts.length>2){ drawPerim(); savePerim(); toast('Perimeter saved'); }
+      else { clearPerim(); }
+      drawingActive=false; drawPointerId=null;
+      map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+      mapEl.style.touchAction='pan-x pan-y';
+      document.getElementById('hint').style.display='none';
+    }
+    mapEl.addEventListener('pointerup', (ev)=>{
+      pointersDown.delete(ev.pointerId);
+      if(drawingActive && ev.pointerId===drawPointerId){ finishDrawing(); }
+    });
+    mapEl.addEventListener('pointercancel', (ev)=>{
+      pointersDown.delete(ev.pointerId);
+      if(drawingActive && ev.pointerId===drawPointerId){ finishDrawing(); }
+    });
+
+    // ===== Auto‑route within perimeter (serpentine sweep; offline)
+    let route=null, progress=null;
+    function clearRoute(){ if(route){ map.removeLayer(route); route=null; } if(progress){ map.removeLayer(progress); progress=null; } localStorage.removeItem(K.route); }
+    function saveRouteLLs(lls){ localStorage.setItem(K.route, JSON.stringify(lls.map(p=>({lat:p.lat,lng:p.lng})))); }
+    function loadRouteLLs(){ try{ const a=JSON.parse(localStorage.getItem(K.route)||'null'); if(a&&a.length){ const lls=a.map(o=>L.latLng(o.lat,o.lng)); drawRoute(lls); } }catch{} }
+    function drawRoute(lls){
+      if(route) map.removeLayer(route);
+      route=L.polyline(lls,{color:'#8e44ad',weight:5,opacity:0.8}).addTo(map);
+      if(progress) map.removeLayer(progress);
+      progress=L.polyline([], {color:'#16a34a',weight:6,opacity:0.9}).addTo(map);
+    }
+    function distM(a,b){
+      const R=6371000,toRad=d=>d*Math.PI/180; const dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
+      const s1=Math.sin(dLat/2), s2=Math.sin(dLng/2); const A=s1*s1+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2; return 2*R*Math.asin(Math.sqrt(A));
+    }
+    function projectPointToPolyline(P, line){
+      if(!line || line.length<2) return {ok:false};
+      let best={ok:false, perp:Infinity, along:0}; let cum=0;
+      for(let i=0;i<line.length-1;i++){
+        const A=line[i], B=line[i+1];
+        const res=projectToSeg(P,A,B,cum); if(res.perp<best.perp){ best=res; } cum=res.cumNext;
+      }
+      return best;
+    }
+    function projectToSeg(P,A,B,cumBefore){
+      const pA=map.latLngToLayerPoint(A), pB=map.latLngToLayerPoint(B), pP=map.latLngToLayerPoint(P);
+      const AB={x:pB.x-pA.x,y:pB.y-pA.y}, AP={x:pP.x-pA.x,y:pP.y-pA.y};
+      const ab2=AB.x*AB.x+AB.y*AB.y; let t=ab2===0?0:(AP.x*AB.x+AP.y*AB.y)/ab2; t=Math.max(0,Math.min(1,t));
+      const projPx={x:pA.x+t*AB.x,y:pA.y+t*AB.y}; const projLL=map.layerPointToLatLng(projPx);
+      const seg=distM(A,B); const perp=distM(P,projLL); const along=cumBefore+seg*t;
+      return {ok:true, perp, along, cumNext:cumBefore+seg};
+    }
+    function updateProgress(along){
+      if(!route||!progress) return;
+      const lls=route.getLatLngs(); const out=[]; let remain=along;
+      for(let i=0;i<lls.length-1;i++){
+        const A=lls[i], B=lls[i+1]; const seg=distM(A,B);
+        if(remain<=0) break;
+        if(remain>=seg){ if(out.length===0) out.push(A); out.push(B); remain-=seg; }
+        else { if(out.length===0) out.push(A);
+          const t=remain/seg; const pA=map.latLngToLayerPoint(A), pB=map.latLngToLayerPoint(B);
+          const pX={x:pA.x+t*(pB.x-pA.x), y:pA.y+t*(pB.y-pA.y)}; out.push(map.layerPointToLatLng(pX)); break; }
+      }
+      progress.setLatLngs(out);
+    }
+
+    // Simple offline serpentine sweep inside perimeter bbox (starts/ends at car)
+    function insidePolygon(pt, polyLL){
+      const pts=polyLL.map(ll=>map.latLngToLayerPoint(ll));
+      const p=map.latLngToLayerPoint(pt); const x=p.x, y=p.y;
+      let inside=false;
+      for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+        const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
+        const intersect=((yi>y)!=(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi);
+        if(intersect) inside=!inside;
+      }
+      return inside;
+    }
+    function generateSweepRoute(){
+      if(!car || !perimPts.length){ toast('Set car and draw perimeter'); return; }
+      const poly=perimPts.slice();
+      // bbox
+      const bbox=poly.reduce((b,ll)=>({minX:Math.min(b.minX,ll.lng), maxX:Math.max(b.maxX,ll.lng), minY:Math.min(b.minY,ll.lat), maxY:Math.max(b.maxY,ll.lat)}),{minX:Infinity,maxX:-Infinity,minY:Infinity,maxY:-Infinity});
+      const spacingM=40;
+      const mPerDegLat=111320, mPerDegLng=111320*Math.cos((car.lat||map.getCenter().lat)*Math.PI/180);
+      const dy=spacingM/mPerDegLat;
+      const startLat=bbox.minY+dy/2, endLat=bbox.maxY-dy/2;
+      const xs=[bbox.minX,bbox.maxX];
+      let lines=[]; let dir=0;
+      for(let y=startLat; y<=endLat; y+=dy){
+        const line=[L.latLng(y, xs[dir?1:0]), L.latLng(y, xs[dir?0:1])];
+        const samples=80; const seg=[];
+        for(let i=0;i<=samples;i++){
+          const lng=line[0].lng + (line[1].lng-line[0].lng)*(i/samples);
+          const ll=L.latLng(y,lng);
+          if(insidePolygon(ll, poly)) seg.push(ll);
+        }
+        if(seg.length>1){ lines.push(seg); dir=1-dir; }
+      }
+      const path=[L.latLng(car.lat,car.lng)];
+      let cur=path[0];
+      function nearest(seg,pt){ const a=seg[0], b=seg[seg.length-1]; const d=(p,q)=>distM(p,q); const d1=d(pt,a), d2=d(pt,b); return d1<=d2? {seg:seg,rev:false,d:d1}:{seg:seg.slice().reverse(),rev:true,d:d2}; }
+      while(lines.length){
+        let bestIdx=0, best={d:Infinity};
+        for(let i=0;i<lines.length;i++){ const cand=nearest(lines[i],cur); if(cand.d<best.d){ best=cand; bestIdx=i; } }
+        const chosen=lines.splice(bestIdx,1)[0];
+        const seq=best.rev? chosen.slice().reverse() : chosen;
+        path.push(...seq); cur=seq[seq.length-1];
+      }
+      path.push(L.latLng(car.lat,car.lng));
+      drawRoute(path); localStorage.setItem(K.route, JSON.stringify(path.map(p=>({lat:p.lat,lng:p.lng})))); toast('Route generated');
+    }
+    document.getElementById('autorouteBtn').onclick=generateSweepRoute;
+    document.getElementById('clearRouteBtn').onclick=()=>{ clearRoute(); };
+
+    // Progress update via GPS
+    navigator.geolocation && navigator.geolocation.watchPosition(pos=>{
+      const ll=L.latLng(pos.coords.latitude,pos.coords.longitude);
+      if(you) you.setLatLng(ll);
+      if(route){
+        const best=projectPointToPolyline(ll, route.getLatLngs());
+        if(best.ok) updateProgress(best.along);
+      }
+    }, err=>console.warn(err), {enableHighAccuracy:true, maximumAge:5000, timeout:10000});
+
+    // ===== Menu actions: car buttons
+    document.getElementById('setCarGPS').onclick=()=>{ if(you){ placeCar(you.getLatLng()); } else { toast('No GPS fix yet'); } };
+    document.getElementById('centerCar').onclick=()=>{ if(car){ map.setView([car.lat,car.lng], Math.max(map.getZoom(), 17)); } };
+    document.getElementById('clearCar').onclick=()=>{ if(carMarker){ map.removeLayer(carMarker); carMarker=null; } car=null; localStorage.removeItem(K.car); };
+
+    // Pins import/export/clear
+    document.getElementById('exportPins').onclick=()=>{
+      const data=JSON.stringify(Array.from(pins.values()).map(({_m, ...o})=>o),null,2);
+      const url=URL.createObjectURL(new Blob([data],{type:'application/json'})); const a=document.createElement('a'); a.href=url; a.download='pins.json'; a.click(); URL.revokeObjectURL(url);
+    };
+    document.getElementById('importPins').onclick=()=>document.getElementById('importPinsFile').click();
+    document.getElementById('importPinsFile').addEventListener('change',ev=>{
+      const f=ev.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{
+        try{ const arr=JSON.parse(r.result); pins.forEach(p=>map.removeLayer(p._m)); pins.clear();
+          arr.forEach(o=>{ const m=L.marker([o.lat,o.lng],{icon:dot(o.color||STATUS.NOT_VISITED)}).addTo(map); const p={...o,_m:m}; pins.set(p.id,p); bindPinPopup(m,p); });
+          savePins(); toast('Pins imported'); }catch(e){ alert('Import failed'); }
+      }; r.readAsText(f);
+    });
+    document.getElementById('clearPins').onclick=()=>{ pins.forEach(p=>map.removeLayer(p._m)); pins.clear(); savePins(); toast('Pins cleared'); };
+
+    // Reset all button
+    document.getElementById('resetAll').onclick=()=>{
+      if(!confirm('Reset all local data (pins, car, perimeter, route)?')) return;
+      // Clear storage and layers
+      localStorage.removeItem(K.pins); localStorage.removeItem(K.car); localStorage.removeItem(K.perim); localStorage.removeItem(K.route);
+      // Remove layers
+      pins.forEach(p=>map.removeLayer(p._m)); pins.clear();
+      if(carMarker){ map.removeLayer(carMarker); carMarker=null; } car=null;
+      if(perim){ map.removeLayer(perim); perim=null; } perimPts=[];
+      if(route){ map.removeLayer(route); route=null; } if(progress){ map.removeLayer(progress); progress=null; }
+      toast('All data reset');
+    };
+  </script>
+</body>
+</html>
