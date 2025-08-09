@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Sales Route Planner — Modular v8 (Side-of-Street)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+    .panel {
+      position: absolute; z-index: 1000; background: rgba(255,255,255,0.98);
+      border-radius: 12px; padding: 12px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15); font-size: 14px;
+    }
+    .legend { top: 10px; left: 10px; }
+    .toolbar { top: 60px; right: 10px; width: 320px; max-width: 92vw; max-height: 70vh; overflow: auto; display: none; }
+    .toolbar.show { display: block; }
+    .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    .swatch { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #0002; }
+    .btn {
+      display: inline-block; padding: 6px 10px; margin: 2px 4px 2px 0; border: 1px solid #ddd; border-radius: 8px;
+      background: #f7f7f7; cursor: pointer; user-select: none;
+    }
+    .btn.active { background: #e5f1ff; border-color: #b3d2ff; }
+    .section-title { font-weight:700; margin-top:8px; }
+    .popup-form label { display:block; margin: 6px 0 2px; font-weight: 600; }
+    .popup-form input, .popup-form select, .popup-form textarea {
+      width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px;
+    }
+    .popup-actions { display:flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .marker-dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5); }
+    .hint {
+      position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+      background: rgba(0,0,0,0.75); color:white; padding:6px 10px; border-radius:8px; font-size:12px;
+    }
+    .palette {
+      position: absolute; z-index: 1100; background: white; border-radius: 12px; padding: 8px;
+      display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.25); border: 1px solid #0001;
+    }
+    .palette .item {
+      width: 36px; height: 36px; border-radius: 50%; border: 2px solid white;
+      box-shadow: 0 0 4px rgba(0,0,0,0.2); margin: 6px; display: inline-flex; align-items:center; justify-content:center;
+      font-size: 20px;
+    }
+    .palette .selected { outline: 3px solid rgba(0,0,0,0.25); }
+    .flex { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .fab {
+      position: absolute; top: 10px; right: 10px; z-index: 1101;
+      width: 44px; height: 44px; border-radius: 50%; border: none;
+      background: #111; color: #fff; font-size: 22px; line-height: 44px; text-align: center;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.3); cursor: pointer;
+    }
+    .toast { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.65); color: #fff; padding: 6px 10px; border-radius: 8px; font-size: 12px;
+      display:none; z-index: 1200; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <button id="menuBtn" class="fab" title="Settings">☰</button>
+  <div id="toast" class="toast"></div>
+
+  <div class="panel legend" id="legendPanel">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><span class="swatch" style="background:#666;"></span> Note pin</div>
+    <div class="row"><span class="swatch" style="background:#e74c3c;"></span> “No soliciting” note</div>
+    <div class="row"><span class="swatch" style="background:#3498db;"></span> “Follow up” note</div>
+    <div class="row"><span class="swatch" style="background:#f1c40f;"></span> “Interested” note</div>
+    <div class="row"><span style="font-size:24px;">🚗</span> Parking (start/end)</div>
+  </div>
+
+  <div class="panel toolbar" id="settingsPanel">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:700;">Settings</div>
+      <button class="btn" id="closeSettings">Close</button>
+    </div>
+
+    <div class="section-title">Feature toggles</div>
+    <label><input type="checkbox" id="tglLongPress" checked> Long‑press palette</label>
+    <label><input type="checkbox" id="tglLegend" checked> Show legend</label>
+    <label><input type="checkbox" id="tglTapDetails" checked> Tap marker opens details popup</label>
+
+    <div class="section-title">Perimeter</div>
+    <div class="row flex">
+      <button class="btn" id="drawPerimeterBtn">Draw perimeter</button>
+      <button class="btn" id="clearPerimeterBtn">Clear perimeter</button>
+    </div>
+
+    <div class="section-title">Route (side‑of‑street)</div>
+    <div class="row">Side: 
+      <select id="sideSelect">
+        <option value="left">Left of path</option>
+        <option value="right">Right of path</option>
+        <option value="both">Both sides (two passes)</option>
+      </select>
+    </div>
+    <div class="row">Offset (m): <input id="offsetInput" type="number" min="1" max="20" value="4" style="width:70px;"></div>
+    <div class="row flex">
+      <button class="btn" id="seedRouteFromCar">Seed base route from car</button>
+      <button class="btn" id="clearRouteBtn">Clear route</button>
+    </div>
+    <div class="row flex">
+      <button class="btn" id="generateSideRouteBtn">Generate side‑of‑street route</button>
+    </div>
+    <div style="font-size:12px;color:#444;">Tip: tap “Seed base route from car”, then tap the map to add a rough path along streets. “Generate side‑of‑street route” will create offset passes that start/end at the car.</div>
+
+    <div class="section-title">Pins</div>
+    <div class="row flex">
+      <button class="btn" id="exportBtn">Export Pins</button>
+      <button class="btn" id="importBtn">Import Pins</button>
+      <input type="file" id="importFile" accept="application/json" style="display:none;" />
+      <button class="btn" id="clearPinsBtn">Clear Pins</button>
+    </div>
+
+    <div class="section-title">Long‑press timing</div>
+    <div class="row">Palette hold (ms): <input id="longPressInput" type="number" min="300" max="5000" value="1000" style="width:90px;"></div>
+  </div>
+
+  <div id="hint" class="hint" style="display:none;">Long‑press, drag to a color (or 🚗), release to drop</div>
+  <div id="palette" class="palette"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    const STATUS = {
+      NOTE_GRAY:   { key:'NOTE_GRAY',   label: 'Note', color: '#666666' },
+      NO_SOLICIT:  { key:'NO_SOLICIT',  label: 'No soliciting', color: '#e74c3c' },
+      FOLLOW_UP:   { key:'FOLLOW_UP',   label: 'Follow-up', color: '#3498db' },
+      INTERESTED:  { key:'INTERESTED',  label: 'Interested', color: '#f1c40f' },
+    };
+    const STATUS_LIST = [STATUS.NOTE_GRAY, STATUS.NO_SOLICIT, STATUS.FOLLOW_UP, STATUS.INTERESTED];
+
+    function makeDot(color) {
+      return L.divIcon({ className: 'custom-dot',
+        html: '<div class="marker-dot" style="background:'+color+'"></div>',
+        iconSize: [18,18], iconAnchor: [9,9], popupAnchor: [0,-9]
+      });
+    }
+    function makeCarIcon() {
+      return L.divIcon({ className: 'car-icon',
+        html: '<div style="font-size:24px; line-height:24px;">🚗</div>',
+        iconSize: [24,24], iconAnchor: [12,12], popupAnchor: [0,-12]
+      });
+    }
+    function newId() { return 'p_' + Date.now() + '_' + Math.floor(Math.random()*1e6); }
+    function escapeHtml(str){return (str||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+    function distM(a,b){
+      const R = 6371000, toRad = d=>d*Math.PI/180;
+      const dLat = toRad(b.lat-a.lat), dLng = toRad(b.lng-a.lng);
+      const s1 = Math.sin(dLat/2), s2 = Math.sin(dLng/2);
+      const A = s1*s1 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2;
+      return 2*R*Math.asin(Math.sqrt(A));
+    }
+
+    function toast(msg, ms=800){
+      const t = document.getElementById('toast');
+      t.textContent = msg; t.style.display = 'block';
+      setTimeout(()=>{ t.style.display = 'none'; }, ms);
+    }
+
+    const map = L.map('map').fitWorld();
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
+    map.locate({ setView:true, maxZoom:18 });
+
+    // Data
+    const STORAGE_PINS = 'srp_mod_pins_v8';
+    const STORAGE_ROUTE = 'srp_mod_route_v8';
+    const STORAGE_PERIM = 'srp_mod_perimeter_v1';
+    const STORAGE_CAR = 'srp_mod_car_v2';
+
+    const pins = new Map();
+    function savePins(){ localStorage.setItem(STORAGE_PINS, JSON.stringify(Array.from(pins.values()).map(({_marker,...rest})=>rest))); }
+    function loadPins(){ try{ return JSON.parse(localStorage.getItem(STORAGE_PINS)||'[]'); }catch{ return []; } }
+
+    let carMarker = null;
+    function saveCar(ll){ localStorage.setItem(STORAGE_CAR, JSON.stringify(ll)); }
+    function loadCar(){ try{ return JSON.parse(localStorage.getItem(STORAGE_CAR)||'null'); }catch{ return null; } }
+
+    function markerPopupHtml(p){
+      return `
+        <div class="popup-form">
+          <label>Label</label>
+          <input type="text" id="title_${p.id}" value="${escapeHtml(p.title||'')}" placeholder="e.g., 123 Main St"/>
+          <label>Notes</label>
+          <textarea id="notes_${p.id}" rows="3">${escapeHtml(p.notes||'')}</textarea>
+          <div class="popup-actions">
+            <button class="btn" data-action="save" data-id="${p.id}">Save</button>
+            <button class="btn" data-action="delete" data-id="${p.id}" style="background:#ffecec;">Delete</button>
+            <button class="btn" data-action="setcar" data-id="${p.id}">Set Parking (my GPS)</button>
+          </div>
+        </div>`;
+    }
+    function attachPopupHandlers(marker,p){
+      const el = marker.getPopup().getElement(); if(!el) return;
+      el.querySelectorAll('button[data-action]').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          const action = btn.getAttribute('data-action');
+          if(action==='save'){
+            p.title = el.querySelector('#title_'+p.id).value.trim();
+            p.notes = el.querySelector('#notes_'+p.id).value.trim();
+            savePins();
+            marker.setPopupContent(markerPopupHtml(p)); attachPopupHandlers(marker,p);
+          } else if(action==='delete'){
+            map.removeLayer(marker); pins.delete(p.id); savePins();
+          } else if(action==='setcar'){
+            if(navigator.geolocation){
+              navigator.geolocation.getCurrentPosition(pos=>{
+                setCarAt({lat:pos.coords.latitude, lng:pos.coords.longitude});
+              }, err=>alert('GPS unavailable'));
+            }
+          }
+        });
+      });
+    }
+    function createMarker(p){
+      const m = L.marker([p.lat,p.lng], {icon: makeDot(p.color)});
+      if(document.getElementById('tglTapDetails').checked){
+        m.bindPopup(markerPopupHtml(p));
+        m.on('popupopen',()=>attachPopupHandlers(m,p));
+      }
+      p._marker = m; m.addTo(map);
+    }
+
+    loadPins().forEach(obj=>{ const p={...obj}; pins.set(p.id,p); createMarker(p); });
+
+    // Palette with 🚗 option
+    const palette = document.getElementById('palette');
+    let paletteActive = false, paletteChoice = STATUS.NOTE_GRAY.key;
+    function buildPalette(){
+      let html='';
+      STATUS_LIST.forEach(s=>{
+        html += `<div class="item" data-key="${s.key}" style="background:${s.color}" title="${s.label}"></div>`;
+      });
+      html += `<div class="item" data-key="CAR" style="background:#fff;">🚗</div>`;
+      palette.innerHTML = html;
+    }
+    function showPalette(containerPoint){
+      buildPalette();
+      palette.style.left = (containerPoint.x - 110) + 'px';
+      palette.style.top  = (containerPoint.y - 80) + 'px';
+      palette.style.display = 'block';
+      paletteActive = true;
+      paletteChoice = STATUS.NOTE_GRAY.key;
+      if(navigator.vibrate) { try { navigator.vibrate(10); } catch(e){} }
+    }
+    function hidePalette(){ palette.style.display='none'; paletteActive=false; }
+    function selectChoiceFromPoint(clientX, clientY){
+      const elAt = document.elementFromPoint(clientX, clientY);
+      if(elAt && elAt.classList && elAt.classList.contains('item')){
+        paletteChoice = elAt.getAttribute('data-key');
+        Array.from(palette.querySelectorAll('.item')).forEach(el=>{
+          el.classList.toggle('selected', el.getAttribute('data-key')===paletteChoice);
+        });
+      }
+    }
+
+    const MOVE_TOL_PX = 8;
+    let pressTimer = null, pressing = false, pressStartPt = null, pressLatLng = null;
+    const mapContainer = map.getContainer();
+    function startPress(ev){
+      if(!document.getElementById('tglLongPress').checked) return;
+      pressing = true;
+      pressStartPt = map.mouseEventToContainerPoint(ev);
+      pressLatLng = map.containerPointToLatLng(pressStartPt);
+      const holdMs = parseInt(document.getElementById('longPressInput').value || '1000', 10);
+      clearTimeout(pressTimer);
+      pressTimer = setTimeout(()=>{
+        if(pressing){
+          showPalette(pressStartPt);
+          if(map.dragging) map.dragging.disable();
+          if(map.scrollWheelZoom) map.scrollWheelZoom.disable();
+        }
+      }, holdMs);
+    }
+    function movePress(ev){
+      if(!pressing) return;
+      const pt = map.mouseEventToContainerPoint(ev);
+      const dx = pt.x - pressStartPt.x, dy = pt.y - pressStartPt.y;
+      const moved = Math.hypot(dx, dy) > MOVE_TOL_PX;
+      if(moved && !paletteActive){
+        cancelPress();
+      }
+      if(paletteActive){
+        ev.preventDefault();
+        selectChoiceFromPoint(ev.clientX, ev.clientY);
+      }
+    }
+    function endPress(ev){
+      if(paletteActive){
+        if(paletteChoice==='CAR'){
+          if(navigator.geolocation){
+            navigator.geolocation.getCurrentPosition(pos=>{
+              setCarAt({lat:pos.coords.latitude, lng:pos.coords.longitude});
+            }, err=>alert('GPS unavailable'));
+          }
+        } else {
+          const s = STATUS_LIST.find(x=>x.key===paletteChoice) || STATUS.NOTE_GRAY;
+          const p = { id:newId(), lat:pressLatLng.lat, lng:pressLatLng.lng, title:'', notes:'', color: s.color };
+          pins.set(p.id,p); createMarker(p); savePins();
+        }
+      }
+      hidePalette();
+      if(map.dragging) map.dragging.enable();
+      if(map.scrollWheelZoom) map.scrollWheelZoom.enable();
+      cancelPress();
+    }
+    function cancelPress(){ pressing=false; clearTimeout(pressTimer); }
+
+    mapContainer.addEventListener('pointerdown', (ev)=>{ if(isClickInsideUI(ev.target)) return; startPress(ev); });
+    mapContainer.addEventListener('pointermove', (ev)=>{ movePress(ev); });
+    mapContainer.addEventListener('pointerup', (ev)=>{ endPress(ev); });
+    mapContainer.addEventListener('pointercancel', cancelPress);
+
+    // Settings show/hide
+    const settingsPanel = document.getElementById('settingsPanel');
+    const menuBtn = document.getElementById('menuBtn');
+    const closeBtn = document.getElementById('closeSettings');
+    menuBtn.addEventListener('click', ()=>{ settingsPanel.classList.toggle('show'); });
+    closeBtn.addEventListener('click', ()=>settingsPanel.classList.remove('show'));
+    function isClickInsideUI(target){
+      return target.closest && (target.closest('.toolbar') || target.closest('.legend') || target.closest('.palette') || target.closest('.fab') || target.closest('.leaflet-control'));
+    }
+    document.addEventListener('pointerdown', (e)=>{
+      if(!isClickInsideUI(e.target)) settingsPanel.classList.remove('show');
+    });
+    document.getElementById('tglLegend').addEventListener('change', e=>{
+      document.getElementById('legendPanel').style.display = e.target.checked ? 'block' : 'none';
+    });
+
+    // Parking (car marker) with drag offset (no ghost; drop where pin is)
+    function setCarAt(ll){
+      if(carMarker){ carMarker.setLatLng(ll); }
+      else {
+        carMarker = L.marker(ll, {icon: makeCarIcon(), draggable:false}).addTo(map).bindPopup('Parking');
+        let carPress=false, carTimer=null;
+        function begin(){ carTimer=setTimeout(()=>{carPress=true;},700); }
+        function end(){ clearTimeout(carTimer); if(carPress){ carPress=false; saveCar(carMarker.getLatLng()); } }
+        carMarker.on('mousedown', begin);
+        carMarker.on('mouseup', end);
+        carMarker.on('touchstart', begin, {passive:true});
+        carMarker.on('touchend', end, {passive:true});
+        mapContainer.addEventListener('pointermove', ev=>{
+          if(!carPress) return;
+          const pt = map.mouseEventToContainerPoint(ev);
+          const off = L.point(pt.x-22, pt.y-22); // offset so pin is visible
+          const ll2 = map.containerPointToLatLng(off);
+          carMarker.setLatLng(ll2);
+        });
+        mapContainer.addEventListener('pointerup', ev=>{
+          if(!carPress) return;
+          carPress=false;
+          saveCar(carMarker.getLatLng());
+        });
+      }
+      saveCar(ll);
+    }
+    const savedCar = loadCar(); if(savedCar){ setCarAt(savedCar); }
+
+    // Perimeter drawing
+    let perimeter = loadPerimeter();
+    let perimeterLayer = null;
+    function loadPerimeter(){ try{ return JSON.parse(localStorage.getItem(STORAGE_PERIM)||'null'); }catch{ return null; } }
+    function savePerimeter(p){ localStorage.setItem(STORAGE_PERIM, JSON.stringify(p)); }
+    function renderPerimeter(){
+      if(perimeterLayer){ map.removeLayer(perimeterLayer); perimeterLayer=null; }
+      if(!perimeter || perimeter.length<2) return;
+      perimeterLayer = L.polygon(perimeter, {color:'#2980b9', weight:2, fillOpacity:0.05}).addTo(map);
+    }
+    renderPerimeter();
+
+    const drawBtn = document.getElementById('drawPerimeterBtn');
+    const clearPerimBtn = document.getElementById('clearPerimeterBtn');
+    let drawing = false, drawPoints = [];
+    drawBtn.addEventListener('click', ()=>{
+      if(drawing) return;
+      drawing = true; drawPoints = [];
+      if(map.dragging) map.dragging.disable();
+      if(map.scrollWheelZoom) map.scrollWheelZoom.disable();
+      toast('Drawing perimeter…');
+    });
+    clearPerimBtn.addEventListener('click', ()=>{
+      perimeter = null; savePerimeter(perimeter); renderPerimeter();
+    });
+    mapContainer.addEventListener('pointermove', ev=>{
+      if(!drawing) return;
+      const pt = map.mouseEventToContainerPoint(ev);
+      drawPoints.push(map.containerPointToLatLng(pt));
+      if(perimeterLayer) { map.removeLayer(perimeterLayer); perimeterLayer=null; }
+      perimeterLayer = L.polyline(drawPoints, {color:'#2980b9', weight:2, opacity:0.8}).addTo(map);
+    });
+    mapContainer.addEventListener('pointerup', ev=>{
+      if(!drawing) return;
+      drawing = false;
+      if(map.dragging) map.dragging.enable();
+      if(map.scrollWheelZoom) map.scrollWheelZoom.enable();
+      if(drawPoints.length>2){
+        perimeter = drawPoints;
+        savePerimeter(perimeter);
+        renderPerimeter();
+      }
+    });
+
+    // Base route + side-of-street generation
+    let baseRoute = loadRoute();
+    let baseRouteLayer = null;
+    let sideRouteLayerA = null, sideRouteLayerB = null;
+    function saveRoute(){ localStorage.setItem(STORAGE_ROUTE, JSON.stringify(baseRoute)); }
+    function loadRoute(){ try{ return JSON.parse(localStorage.getItem(STORAGE_ROUTE)||'[]'); }catch{ return []; } }
+    function renderBaseRoute(){
+      if(baseRouteLayer){ map.removeLayer(baseRouteLayer); baseRouteLayer=null; }
+      if(baseRoute.length<2) return;
+      baseRouteLayer = L.polyline(baseRoute, {color:'#8e44ad', weight:4, opacity:0.7}).addTo(map);
+    }
+    function clearSideRoutes(){
+      if(sideRouteLayerA){ map.removeLayer(sideRouteLayerA); sideRouteLayerA=null; }
+      if(sideRouteLayerB){ map.removeLayer(sideRouteLayerB); sideRouteLayerB=null; }
+    }
+    renderBaseRoute();
+
+    document.getElementById('seedRouteFromCar').addEventListener('click', ()=>{
+      if(!carMarker){ alert('Set Parking first'); return; }
+      baseRoute = [carMarker.getLatLng()];
+      saveRoute(); renderBaseRoute(); clearSideRoutes();
+      toast('Tap the map to add base route points');
+    });
+    document.getElementById('clearRouteBtn').addEventListener('click', ()=>{
+      baseRoute = []; saveRoute(); renderBaseRoute(); clearSideRoutes();
+    });
+    map.on('click', e=>{
+      if(settingsPanel.classList.contains('show')) return;
+      if(!baseRoute) baseRoute = [];
+      baseRoute.push(e.latlng); saveRoute(); renderBaseRoute(); clearSideRoutes();
+    });
+
+    document.getElementById('generateSideRouteBtn').addEventListener('click', ()=>{
+      if(!carMarker){ alert('Set Parking first'); return; }
+      if(!baseRoute || baseRoute.length<2){ alert('Create a base route (seed from car, then tap along streets).'); return; }
+      const carLL = carMarker.getLatLng();
+      if(distM(baseRoute[0], carLL)>5) baseRoute.unshift(carLL);
+      if(distM(baseRoute[baseRoute.length-1], carLL)>5) baseRoute.push(carLL);
+      saveRoute(); renderBaseRoute();
+      const side = document.getElementById('sideSelect').value;
+      const offsetM = parseFloat(document.getElementById('offsetInput').value||'4');
+      const offLeft = offsetPolyline(baseRoute, offsetM, 'left');
+      const offRight = offsetPolyline(baseRoute, offsetM, 'right');
+      clearSideRoutes();
+      if(side==='left'){
+        sideRouteLayerA = L.polyline(offLeft, {color:'#27ae60', weight:6, opacity:0.9}).addTo(map);
+      } else if(side==='right'){
+        sideRouteLayerA = L.polyline(offRight, {color:'#27ae60', weight:6, opacity:0.9}).addTo(map);
+      } else {
+        sideRouteLayerA = L.polyline(offLeft, {color:'#27ae60', weight:6, opacity:0.9}).addTo(map);
+        sideRouteLayerB = L.polyline(offRight, {color:'#f39c12', weight:6, opacity:0.9}).addTo(map);
+      }
+      toast('Side-of-street route generated');
+    });
+
+    function offsetPolyline(latlngs, meters, side){
+      const out = [];
+      for(let i=0;i<latlngs.length;i++){
+        const A = latlngs[Math.max(0,i-1)];
+        const B = latlngs[i];
+        const C = latlngs[Math.min(latlngs.length-1,i+1)];
+        const pA = map.latLngToLayerPoint(A);
+        const pB = map.latLngToLayerPoint(B);
+        const pC = map.latLngToLayerPoint(C);
+        const v1 = normalize({x:pB.x-pA.x, y:pB.y-pA.y});
+        const v2 = normalize({x:pC.x-pB.x, y:pC.y-pB.y});
+        const t = normalize({x:(v1.x+v2.x)||v1.x, y:(v1.y+v2.y)||v1.y});
+        let n = {x:-t.y, y:t.x};
+        if(side==='right') { n.x*=-1; n.y*=-1; }
+        const mPerPx = metersPerPixelAtLat(B.lat, map.getZoom());
+        const off = {x: pB.x + n.x * (meters/mPerPx), y: pB.y + n.y * (meters/mPerPx)};
+        out.push(map.layerPointToLatLng(off));
+      }
+      return out;
+    }
+    function normalize(v){ const L = Math.hypot(v.x, v.y); return L? {x:v.x/L, y:v.y/L}:{x:0,y:0}; }
+    function metersPerPixelAtLat(lat, zoom){
+      const earthCircum = 40075016.686;
+      return Math.cos(lat * Math.PI/180) * earthCircum / Math.pow(2, zoom+8);
+    }
+
+    // Pins import/export
+    document.getElementById('exportBtn').addEventListener('click', ()=>{
+      const data = JSON.stringify(Array.from(pins.values()).map(({_marker,...rest})=>rest), null, 2);
+      const blob = new Blob([data], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download='sales_route_pins.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+    document.getElementById('importBtn').addEventListener('click', ()=>document.getElementById('importFile').click());
+    document.getElementById('importFile').addEventListener('change', ev=>{
+      const file = ev.target.files[0]; if(!file) return;
+      const r = new FileReader(); r.onload = ()=>{
+        try{
+          const arr = JSON.parse(r.result);
+          pins.forEach(p=>{ if(p._marker) map.removeLayer(p._marker); });
+          pins.clear();
+          arr.forEach(obj=>{ const p={...obj, id: obj.id||newId()}; pins.set(p.id,p); createMarker(p); });
+          savePins();
+        } catch(err){ alert('Import failed: '+err.message); }
+      }; r.readAsText(file);
+    });
+    document.getElementById('clearPinsBtn').addEventListener('click', ()=>{
+      pins.forEach(p=>{ if(p._marker) map.removeLayer(p._marker); });
+      pins.clear(); savePins();
+    });
+  </script>
+</body>
+</html>
