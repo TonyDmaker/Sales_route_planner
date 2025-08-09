@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sales Route Planner — base shell v5</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html, body { height:100%; margin:0; }
+  #app { position:relative; height:100vh; width:100vw; overflow:hidden; }
+  #map { position:absolute; inset:0; height:100%; width:100%; }
+  /* Panels */
+  .panel {
+    position:absolute; z-index:1000; background:rgba(255,255,255,0.98);
+    border-radius:12px; padding:12px; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    box-shadow:0 2px 10px rgba(0,0,0,0.15); font-size:14px;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  }
+  .legend { top:10px; left:10px; }
+  .toolbar { top:60px; right:10px; width:320px; max-width:92vw; max-height:70vh; overflow:auto; display:none; }
+  .toolbar.show { display:block; }
+  .row { display:flex; align-items:center; gap:6px; margin:4px 0; flex-wrap:wrap; }
+  .btn {
+    display:inline-block; padding:6px 10px; margin:2px 4px 2px 0; border:1px solid #ddd; border-radius:8px;
+    background:#f7f7f7; cursor:pointer; user-select:none;
+  }
+  .marker-dot { width:18px; height:18px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 3px rgba(0,0,0,0.5); }
+  .car-emoji { font-size:26px; line-height:26px; transform:translate(-2px,-2px); }
+
+  /* Palette */
+  .palette {
+    position:absolute; z-index:1102; background:#fff; border-radius:12px; padding:8px; display:none;
+    box-shadow:0 4px 12px rgba(0,0,0,0.25); border:1px solid #0001;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  }
+  .palette .opt { width:36px; height:36px; border-radius:50%; border:2px solid #fff;
+    display:inline-flex; align-items:center; justify-content:center; margin:6px;
+    box-shadow:0 0 4px rgba(0,0,0,.2);
+  }
+  .palette .selected { outline:3px solid rgba(0,0,0,0.25); }
+
+  /* Floating menu button */
+  .fab {
+    position:absolute; top:10px; right:10px; z-index:1103;
+    width:44px; height:44px; border-radius:50%; border:none;
+    background:#111; color:#fff; font-size:22px; line-height:44px; text-align:center;
+    box-shadow:0 3px 10px rgba(0,0,0,0.3); cursor:pointer;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  }
+
+  .hint { position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,.7); color:#fff; padding:6px 10px; border-radius:8px; font-size:12px; display:none; z-index:1200; }
+
+  /* Full-screen shield overlay for capturing gestures */
+  #shield { position:absolute; inset:0; z-index:1101; display:none; pointer-events:none; background:transparent; touch-action:none; }
+  #shield.active { display:block; pointer-events:auto; }
+
+  /* Allow selection inside editable fields if we add any later */
+  input, textarea { user-select:text; -webkit-user-select:text; -webkit-touch-callout:default; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="shield"></div>
+
+  <button id="menuBtn" class="fab" title="Settings">☰</button>
+  <div id="drawHint" class="hint">Draw a loop, lift to finish</div>
+
+  <div class="panel legend" id="legendPanel">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><div class="marker-dot" style="background:#000000;"></div> Not visited</div>
+    <div class="row"><div class="marker-dot" style="background:#3498db;"></div> Visited</div>
+    <div class="row"><div class="marker-dot" style="background:#f1c40f;"></div> Follow‑up</div>
+    <div class="row"><div class="marker-dot" style="background:#2ecc71;"></div> Wants to buy</div>
+    <div class="row"><div class="marker-dot" style="background:#e74c3c;"></div> No soliciting</div>
+    <div class="row"><span class="car-emoji">🚗</span> Parking</div>
+  </div>
+
+  <div class="panel toolbar" id="settingsPanel">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:700;">Settings</div>
+      <button class="btn" id="closeSettings">Close</button>
+    </div>
+    <div style="margin-top:6px;font-weight:700;">Pins</div>
+    <div class="row">
+      <button class="btn" id="clearPins">Clear pins</button>
+    </div>
+    <div style="margin-top:6px;font-weight:700;">Area</div>
+    <div class="row">
+      <button class="btn" id="drawPerimeterBtn">Draw perimeter</button>
+      <button class="btn" id="clearPerimeterBtn">Clear perimeter</button>
+    </div>
+  </div>
+
+  <div id="palette" class="palette"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ====== Map init ======
+const map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
+map.setView([37.773972,-122.431297], 13);
+if (navigator.geolocation) { map.locate({ setView:true, maxZoom:18 }); }
+window.addEventListener('load', ()=> setTimeout(()=> map.invalidateSize(), 100));
+
+const shield = document.getElementById('shield');
+function shieldOn(){ shield.classList.add('active'); }
+function shieldOff(){ shield.classList.remove('active'); }
+
+// ====== Menu ======
+const menuBtn=document.getElementById('menuBtn');
+const settings=document.getElementById('settingsPanel');
+menuBtn.addEventListener('click', ()=> settings.classList.toggle('show'));
+document.getElementById('closeSettings').addEventListener('click', ()=> settings.classList.remove('show'));
+document.addEventListener('pointerdown', (e)=>{
+  const t=e.target;
+  if(!(t.closest('.toolbar')||t.closest('.fab')||t.closest('.leaflet-control'))) settings.classList.remove('show');
+},{passive:true});
+
+// ====== Pins + Car ======
+const COLOR = { NOT_VISITED:'#000000', VISITED:'#3498db', FOLLOW_UP:'#f1c40f', WANTS:'#2ecc71', NO_SOLICIT:'#e74c3c' };
+const PALETTE = [COLOR.NOT_VISITED, COLOR.VISITED, COLOR.FOLLOW_UP, COLOR.WANTS, COLOR.NO_SOLICIT];
+const pins = new Set();
+let carMarker=null, car={lat:null,lng:null};
+function dot(color){ return L.divIcon({className:'',html:`<div class="marker-dot" style="background:${color}"></div>`,iconSize:[18,18],iconAnchor:[9,9]}); }
+function carIcon(){ return L.divIcon({className:'',html:`<div class="car-emoji">🚗</div>`,iconSize:[26,26],iconAnchor:[13,13]}); }
+
+function addPin(ll,color){
+  const m=L.marker(ll,{icon:dot(color)}).addTo(map);
+  pins.add(m);
+  return m;
+}
+function clearPins(){
+  pins.forEach(m=>map.removeLayer(m));
+  pins.clear();
+}
+
+function placeCar(ll){
+  if(carMarker) carMarker.remove();
+  car = {lat:ll.lat, lng:ll.lng};
+  carMarker = L.marker(ll,{icon:carIcon(),interactive:true}).addTo(map);
+  bindCarDrag();
+}
+
+function bindCarDrag(){
+  if(!carMarker) return;
+  const el = carMarker._icon;
+  let timer=null, dragging=false, pointerId=null;
+  const offset={x:-16,y:-24};
+  function onDown(e){
+    if(e.pointerType==='touch' && e.isPrimary===false) return;
+    e.preventDefault();
+    clearTimeout(timer);
+    timer=setTimeout(()=>{
+      dragging=true; pointerId=e.pointerId;
+      map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+      el.setPointerCapture && el.setPointerCapture(pointerId);
+    },700);
+  }
+  function onMove(e){
+    if(!dragging || e.pointerId!==pointerId) return;
+    e.preventDefault();
+    const pt=map.mouseEventToContainerPoint(e);
+    const pinPt={x:pt.x+offset.x,y:pt.y+offset.y};
+    carMarker.setLatLng(map.containerPointToLatLng(pinPt));
+  }
+  function onUp(e){
+    clearTimeout(timer);
+    if(dragging && e.pointerId===pointerId){
+      e.preventDefault();
+      const pt=map.mouseEventToContainerPoint(e);
+      const pinPt={x:pt.x+offset.x,y:pt.y+offset.y};
+      placeCar(map.containerPointToLatLng(pinPt));
+    }
+    dragging=false; pointerId=null;
+    map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+  }
+  el.addEventListener('pointerdown', onDown, {passive:false});
+  el.addEventListener('pointermove', onMove, {passive:false});
+  el.addEventListener('pointerup', onUp, {passive:false});
+  el.addEventListener('pointercancel', onUp, {passive:false});
+}
+
+// ====== Long-press palette with shield (prevents map from moving) ======
+const palette=document.getElementById('palette');
+let longTimer=null, pressPt=null, pressLL=null;
+function buildPalette(){
+  palette.innerHTML = ''
+    + PALETTE.map(c=>`<div class="opt" data-type="note" data-color="${c}" style="background:${c}"></div>`).join('')
+    + `<div class="opt" data-type="car" style="background:#fff;">🚗</div>`;
+}
+function showPalette(pt){
+  buildPalette();
+  palette.style.left=(pt.x-110)+'px';
+  palette.style.top=(pt.y-80)+'px';
+  palette.style.display='block';
+  shieldOn();
+  map.dragging.disable(); map.touchZoom.disable();
+}
+function hidePalette(){
+  palette.style.display='none';
+  shieldOff();
+  map.dragging.enable(); map.touchZoom.enable();
+}
+const mapEl=map.getContainer();
+mapEl.addEventListener('pointerdown', (e)=>{
+  if(e.target.closest('.leaflet-marker-icon')) return;
+  if(e.pointerType==='touch' && e.isPrimary===false) return;
+  pressPt=map.mouseEventToContainerPoint(e);
+  pressLL=map.containerPointToLatLng(pressPt);
+  clearTimeout(longTimer);
+  longTimer=setTimeout(()=>{ showPalette(pressPt); },1000);
+},{passive:false});
+mapEl.addEventListener('pointermove', (e)=>{
+  if(!longTimer) return;
+  const pt=map.mouseEventToContainerPoint(e);
+  if(Math.hypot(pt.x-pressPt.x, pt.y-pressPt.y)>8){ clearTimeout(longTimer); longTimer=null; }
+},{passive:false});
+
+shield.addEventListener('pointermove', (e)=>{
+  if(palette.style.display!=='block') return;
+  e.preventDefault();
+  const el=document.elementFromPoint(e.clientX,e.clientY);
+  Array.from(palette.children).forEach(c=>c.classList.toggle('selected', c===el));
+},{passive:false});
+function endPalette(e){
+  if(longTimer){ clearTimeout(longTimer); longTimer=null; }
+  if(palette.style.display==='block'){
+    const el=document.elementFromPoint(e.clientX,e.clientY);
+    let choice=null;
+    if(el && el.classList.contains('opt')){
+      choice = el.getAttribute('data-type')==='car' ? 'car' : ('note:'+el.getAttribute('data-color'));
+    }
+    hidePalette();
+    if(choice==='car'){ placeCar(pressLL); }
+    else if(choice && choice.startsWith('note:')){ addPin(pressLL, choice.split(':')[1]); }
+  }
+}
+shield.addEventListener('pointerup', endPalette, {passive:false});
+shield.addEventListener('pointercancel', endPalette, {passive:false});
+
+// ====== Perimeter drawing via shield (robust) ======
+let drawing=false, drawPointer=null, drawLine=null, perimPoly=null, perimPts=[];
+const hint = document.getElementById('drawHint');
+
+function startDraw(){
+  settings.classList.remove('show');
+  drawing=true; drawPointer=null; perimPts=[];
+  if(drawLine) { drawLine.remove(); drawLine=null; }
+  if(perimPoly){ perimPoly.remove(); perimPoly=null; }
+  drawLine=L.polyline([], {color:'#ff7a00', weight:4, opacity:1}).addTo(map); // bright orange
+  hint.style.display='block';
+  shieldOn();
+  map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+}
+function finishDraw(){
+  drawing=false; drawPointer=null;
+  hint.style.display='none';
+  shieldOff();
+  map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+  if(perimPts.length>2){
+    if(drawLine){ drawLine.remove(); drawLine=null; }
+    perimPoly=L.polygon(perimPts, {color:'#2563eb', weight:3, opacity:0.9, fill:true, fillOpacity:0.1}).addTo(map);
+  }else{
+    if(drawLine){ drawLine.remove(); drawLine=null; }
+  }
+}
+
+document.getElementById('drawPerimeterBtn').addEventListener('click', startDraw);
+document.getElementById('clearPerimeterBtn').addEventListener('click', ()=>{
+  if(drawLine){ drawLine.remove(); drawLine=null; }
+  if(perimPoly){ perimPoly.remove(); perimPoly=null; }
+  perimPts=[];
+  settings.classList.remove('show');
+});
+
+shield.addEventListener('pointerdown', (e)=>{
+  if(!drawing) return;
+  if(drawPointer!==null) return; // already drawing
+  drawPointer=e.pointerId;
+  perimPts=[];
+  perimPts.push(map.mouseEventToLatLng(e));
+  drawLine.setLatLngs(perimPts);
+},{passive:false});
+
+shield.addEventListener('pointermove', (e)=>{
+  if(!drawing || e.pointerId!==drawPointer) return;
+  e.preventDefault();
+  const ll=map.mouseEventToLatLng(e);
+  perimPts.push(ll);
+  drawLine.setLatLngs(perimPts);
+},{passive:false});
+
+function endDrawing(e){
+  if(!drawing || e.pointerId!==drawPointer) return;
+  finishDraw();
+}
+shield.addEventListener('pointerup', endDrawing, {passive:false});
+shield.addEventListener('pointercancel', endDrawing, {passive:false});
+
+// ====== Clear pins button ======
+document.getElementById('clearPins').addEventListener('click', ()=>{
+  clearPins();
+  settings.classList.remove('show');
+});
+</script>
+</body>
+</html>
