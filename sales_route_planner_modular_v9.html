@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Sales Route Planner — v9 (Perimeter→Route 1‑tap)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+    .panel {
+      position: absolute; z-index: 1000; background: rgba(255,255,255,0.98);
+      border-radius: 12px; padding: 12px; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15); font-size: 14px;
+    }
+    .legend { top: 10px; left: 10px; }
+    .toolbar { top: 60px; right: 10px; width: 320px; max-width: 92vw; max-height: 70vh; overflow: auto; display: none; }
+    .toolbar.show { display: block; }
+    .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    .btn {
+      display: inline-block; padding: 6px 10px; margin: 2px 4px 2px 0; border: 1px solid #ddd; border-radius: 8px;
+      background: #f7f7f7; cursor: pointer; user-select: none;
+    }
+    .btn.primary { background:#0ea5e9; color:#fff; border-color:#0ea5e9; }
+    .btn.active { background: #e5f1ff; border-color: #b3d2ff; }
+    .marker-dot { width: 18px; height: 18px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5); }
+    .car-icon { font-size:20px; line-height:20px; }
+    .palette {
+      position:absolute; z-index:1100; background:#fff; border-radius:12px; padding:8px; display:none;
+      box-shadow:0 4px 12px rgba(0,0,0,0.25); border:1px solid #0001;
+    }
+    .palette .opt { width:36px; height:36px; border-radius:50%; border:2px solid #fff; display:inline-flex; align-items:center; justify-content:center; margin:6px; box-shadow:0 0 4px rgba(0,0,0,.2); }
+    .palette .selected { outline:3px solid rgba(0,0,0,0.25); }
+    .fab {
+      position: absolute; top: 10px; right: 10px; z-index: 1101;
+      width: 44px; height: 44px; border-radius: 50%; border: none;
+      background: #111; color: #fff; font-size: 22px; line-height: 44px; text-align: center;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.3); cursor: pointer;
+    }
+    .toast { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,.65); color:#fff; padding:6px 10px; border-radius:8px; font-size:12px; display:none; z-index:1200; }
+    .draw-hint { position:absolute; bottom:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,.7); color:#fff; padding:6px 10px; border-radius:8px; font-size:12px; display:none; z-index:1200; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <button id="menuBtn" class="fab" title="Settings">☰</button>
+  <div id="toast" class="toast"></div>
+  <div id="drawHint" class="draw-hint">Draw a loop around the car, lift to finish</div>
+
+  <div class="panel legend" id="legendPanel">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><div class="marker-dot" style="background:#666;"></div> Note pin</div>
+    <div class="row"><span class="car-icon">🚗</span> Car (start/end)</div>
+  </div>
+
+  <div class="panel toolbar" id="settingsPanel">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:700;">Settings</div>
+      <button class="btn" id="closeSettings">Close</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Pins</div>
+    <div class="row">
+      <button class="btn" id="exportPins">Export</button>
+      <button class="btn" id="importPins">Import</button>
+      <input type="file" id="importPinsFile" accept="application/json" style="display:none;">
+      <button class="btn" id="clearPins">Clear</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Car / Area</div>
+    <div class="row">
+      <button class="btn" id="setCarGPS">Set car at my GPS</button>
+      <button class="btn" id="centerCar">Center on car</button>
+      <button class="btn" id="clearCar">Clear car</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="drawPerimeterBtn">Draw perimeter</button>
+      <button class="btn" id="clearPerimeterBtn">Clear perimeter</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Route</div>
+    <div class="row">
+      <button class="btn primary" id="autorouteBtn">Auto‑route within perimeter</button>
+      <button class="btn" id="clearRouteBtn">Clear route</button>
+    </div>
+  </div>
+
+  <div id="palette" class="palette"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    // ===== Helpers & storage
+    const STORAGE_PINS='srp_v9_pins', STORAGE_CAR='srp_v9_car', STORAGE_PERIM='srp_v9_perimeter', STORAGE_ROUTE='srp_v9_route';
+    const COLORS = ['#666666','#2ecc71','#e74c3c','#3498db','#f1c40f'];
+    function toast(msg,ms=900){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',ms); }
+    const map = L.map('map').fitWorld();
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+    map.locate({setView:true,maxZoom:18});
+    let you=null; map.on('locationfound',e=>{ if(!you){ you=L.marker(e.latlng).addTo(map).bindPopup('You'); } });
+
+    // ===== Pins (notes only)
+    const pins=new Map();
+    function savePins(){ localStorage.setItem(STORAGE_PINS, JSON.stringify(Array.from(pins.values()).map(p=>({id:p.id,lat:p.lat,lng:p.lng,color:p.color,title:p.title||'',notes:p.notes||''})))); }
+    function loadPins(){ try{return JSON.parse(localStorage.getItem(STORAGE_PINS)||'[]')}catch{ return []} }
+    function newId(){ return 'p_'+Date.now()+'_'+Math.floor(Math.random()*1e6) }
+    function dot(color){ return L.divIcon({className:'',html:`<div class="marker-dot" style="background:${color}"></div>`,iconSize:[18,18],iconAnchor:[9,9],popupAnchor:[0,-9]}); }
+    function pinPopupHtml(p){ return `<div><div style="font-weight:700;margin-bottom:6px;">House note</div>
+      <label>Label</label><input id="t_${p.id}" style="width:100%;margin:2px 0 6px;" value="${(p.title||'').replace(/"/g,'&quot;')}">
+      <label>Notes</label><textarea id="n_${p.id}" rows="3" style="width:100%;margin-top:2px;">${(p.notes||'')}</textarea>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+        ${COLORS.map(c=>`<button data-c="${c}" class="btn" style="background:${c};border-color:${c};color:#000;">&nbsp;</button>`).join('')}
+        <button class="btn" id="del_${p.id}" style="background:#fee;border-color:#fee;">Delete</button>
+      </div></div>`; }
+    function bindPinPopup(m,p){
+      m.bindPopup(pinPopupHtml(p));
+      m.on('popupopen',()=>{
+        const el=m.getPopup().getElement();
+        el.querySelectorAll('button[data-c]').forEach(b=>b.addEventListener('click',()=>{
+          p.color=b.getAttribute('data-c'); m.setIcon(dot(p.color)); savePins();
+        }));
+        el.querySelector('#del_'+p.id).addEventListener('click',()=>{ map.removeLayer(m); pins.delete(p.id); savePins(); });
+        el.querySelector('#t_'+p.id).addEventListener('input',e=>{ p.title=e.target.value; savePins(); });
+        el.querySelector('#n_'+p.id).addEventListener('input',e=>{ p.notes=e.target.value; savePins(); });
+      });
+    }
+    function addPinLL(latlng,color='#666666'){
+      const p={id:newId(),lat:latlng.lat,lng:latlng.lng,color};
+      const m=L.marker(latlng,{icon:dot(color)}).addTo(map);
+      bindPinPopup(m,p); p._m=m; pins.set(p.id,p); savePins();
+    }
+    loadPins().forEach(o=>{ const m=L.marker([o.lat,o.lng],{icon:dot(o.color)}).addTo(map); const p={...o,_m:m}; pins.set(p.id,p); bindPinPopup(m,p); });
+
+    // ===== Car (bigger, offset-under-finger; drops where the pin is)
+    let car=null, carMarker=null;
+    function carIcon(){ return L.divIcon({className:'',html:`<div style="font-size:26px;line-height:26px;transform:translate(-2px,-2px)">🚗</div>`,iconSize:[26,26],iconAnchor:[13,13]}); }
+    function placeCar(latlng){ if(carMarker){ map.removeLayer(carMarker); } car={lat:latlng.lat,lng:latlng.lng}; localStorage.setItem(STORAGE_CAR, JSON.stringify(car)); carMarker=L.marker(latlng,{icon:carIcon(),draggable:false}).addTo(map); enableCarDrag(); }
+    function loadCar(){ try{ const c=JSON.parse(localStorage.getItem(STORAGE_CAR)||'null'); if(c){ placeCar(c); } }catch{} }
+    loadCar();
+
+    function enableCarDrag(){
+      if(!carMarker) return;
+      // Long-press to pick up
+      const cont=map.getContainer(); let holdTimer=null, holding=false, dragActive=false, offset={x:-16,y:-24};
+      let ghost=null;
+      function screenToLatLng(x,y){ return map.containerPointToLatLng(map.layerPointToContainerPoint(map.latLngToLayerPoint(map.getCenter())).add({x:x - window.innerWidth/2, y:y - window.innerHeight/2})) }
+      function onPointerDown(ev){
+        if(!ev.target.closest('.leaflet-marker-icon')) return;
+        if(ev.target.closest('.leaflet-marker-icon')!==carMarker._icon) return;
+        ev.preventDefault();
+        holding=true; holdTimer=setTimeout(()=>{
+          dragActive=true;
+          // We show the real car following finger with an offset; no ghost
+          document.addEventListener('pointermove', onPointerMove, {passive:false});
+          document.addEventListener('pointerup', onPointerUp, {passive:false});
+          map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+        },700);
+      }
+      function onPointerMove(ev){
+        if(!dragActive) return;
+        ev.preventDefault();
+        const pt=map.mouseEventToContainerPoint(ev);
+        const pinPt={x:pt.x+offset.x,y:pt.y+offset.y};
+        const ll=map.containerPointToLatLng(pinPt);
+        carMarker.setLatLng(ll);
+      }
+      function onPointerUp(ev){
+        clearTimeout(holdTimer); holding=false;
+        if(dragActive){
+          ev.preventDefault();
+          const pt=map.mouseEventToContainerPoint(ev);
+          const pinPt={x:pt.x+offset.x,y:pt.y+offset.y};
+          const ll=map.containerPointToLatLng(pinPt);
+          placeCar(ll); // drop where the pin is (offset applied)
+          dragActive=false;
+          map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+        }
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', onPointerUp);
+      }
+      cont.addEventListener('pointerdown', onPointerDown);
+    }
+
+    // Menu + actions
+    const settings=document.getElementById('settingsPanel');
+    document.getElementById('menuBtn').onclick=()=>settings.classList.toggle('show');
+    document.getElementById('closeSettings').onclick=()=>settings.classList.remove('show');
+    function clickOutsideUI(e){ const t=e.target; if(!(t.closest('.toolbar')||t.closest('.fab')||t.closest('.leaflet-control'))) settings.classList.remove('show'); }
+    document.addEventListener('pointerdown', clickOutsideUI, {passive:true});
+
+    // Palette on long press (note pins + car)
+    const palette=document.getElementById('palette');
+    let longTimer=null, pressStartPt=null, pressLatLng=null, paletteOpen=false, selected='note';
+    function buildPalette(){
+      palette.innerHTML = ''
+        + COLORS.map(c=>`<div class="opt" data-type="note" data-color="${c}" style="background:${c}"></div>`).join('')
+        + `<div class="opt" data-type="car" style="background:#fff;">🚗</div>`;
+    }
+    function showPalette(pt){ buildPalette(); palette.style.left=(pt.x-110)+'px'; palette.style.top=(pt.y-80)+'px'; palette.style.display='block'; paletteOpen=true; }
+    function hidePalette(){ palette.style.display='none'; paletteOpen=false; }
+    map.getContainer().addEventListener('pointerdown', (ev)=>{
+      if(ev.target.closest('.leaflet-marker-icon')) return; // don't conflict with marker gestures
+      pressStartPt=map.mouseEventToContainerPoint(ev);
+      pressLatLng=map.containerPointToLatLng(pressStartPt);
+      longTimer=setTimeout(()=>{ showPalette(pressStartPt); map.dragging.disable(); map.touchZoom.disable(); },1000);
+    });
+    map.getContainer().addEventListener('pointermove', (ev)=>{
+      if(!longTimer) return;
+      const pt=map.mouseEventToContainerPoint(ev);
+      if(Math.hypot(pt.x-pressStartPt.x, pt.y-pressStartPt.y)>8){ clearTimeout(longTimer); longTimer=null; }
+      if(paletteOpen){
+        const el=document.elementFromPoint(ev.clientX, ev.clientY);
+        if(el && el.classList.contains('opt')){
+          Array.from(palette.children).forEach(c=>c.classList.toggle('selected', c===el));
+          selected = el.getAttribute('data-type')==='car' ? 'car' : ('note:'+el.getAttribute('data-color'));
+        }
+      }
+    }, {passive:false});
+    function endPalette(ev){
+      if(longTimer){ clearTimeout(longTimer); longTimer=null; }
+      if(paletteOpen){
+        const choice=selected;
+        hidePalette(); map.dragging.enable(); map.touchZoom.enable();
+        if(choice==='car'){
+          // Always use GPS if we have it; fallback: drop at press point
+          if(you){ placeCar(you.getLatLng()); } else { placeCar(pressLatLng); }
+        }else if(choice.startsWith('note:')){
+          const color=choice.split(':')[1];
+          addPinLL(pressLatLng, color);
+        }
+      }
+    }
+    map.getContainer().addEventListener('pointerup', endPalette);
+    map.on('movestart', ()=>{ if(longTimer){ clearTimeout(longTimer); longTimer=null; } hidePalette(); });
+
+    // Pins import/export/clear
+    document.getElementById('exportPins').onclick=()=>{
+      const data=JSON.stringify(Array.from(pins.values()).map(({_m, ...o})=>o),null,2);
+      const url=URL.createObjectURL(new Blob([data],{type:'application/json'})); const a=document.createElement('a'); a.href=url; a.download='pins.json'; a.click(); URL.revokeObjectURL(url);
+    };
+    document.getElementById('importPins').onclick=()=>document.getElementById('importPinsFile').click();
+    document.getElementById('importPinsFile').addEventListener('change',ev=>{
+      const f=ev.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{
+        try{ const arr=JSON.parse(r.result); pins.forEach(p=>map.removeLayer(p._m)); pins.clear();
+          arr.forEach(o=>{ const m=L.marker([o.lat,o.lng],{icon:dot(o.color||'#666')}).addTo(map); const p={...o,_m:m}; pins.set(p.id,p); bindPinPopup(m,p); });
+          savePins(); toast('Pins imported'); }catch(e){ alert('Import failed'); }
+      }; r.readAsText(f);
+    });
+    document.getElementById('clearPins').onclick=()=>{ pins.forEach(p=>map.removeLayer(p._m)); pins.clear(); savePins(); };
+
+    // ===== Perimeter drawing (pointer events, freeze map during draw)
+    let drawing=false, perim=null, perimPts=[];
+    const perimStyle={color:'#2563eb', weight:3, opacity:0.8};
+    function savePerim(){ localStorage.setItem(STORAGE_PERIM, JSON.stringify(perimPts.map(ll=>({lat:ll.lat,lng:ll.lng})))); }
+    function loadPerim(){ try{ const a=JSON.parse(localStorage.getItem(STORAGE_PERIM)||'null'); if(a&&a.length){ perimPts=a.map(o=>L.latLng(o.lat,o.lng)); drawPerim(); } }catch{} }
+    function drawPerim(){ if(perim){ map.removeLayer(perim); } perim=L.polygon(perimPts,{...perimStyle, fill:true, fillOpacity:0.08}).addTo(map); }
+    function clearPerim(){ if(perim){ map.removeLayer(perim); perim=null; } perimPts=[]; localStorage.removeItem(STORAGE_PERIM); }
+    loadPerim();
+    document.getElementById('drawPerimeterBtn').onclick=()=>{
+      toast('Drawing…'); drawing=true; perimPts=[]; drawPerim(); document.getElementById('drawHint').style.display='block';
+      map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+    };
+    document.getElementById('clearPerimeterBtn').onclick=()=>{ clearPerim(); toast('Perimeter cleared'); };
+    map.getContainer().addEventListener('pointerdown', ev=>{
+      if(!drawing) return;
+      perimPts=[]; if(perim) perim.setLatLngs(perimPts);
+    });
+    map.getContainer().addEventListener('pointermove', ev=>{
+      if(!drawing) return;
+      const ll=map.mouseEventToLatLng(ev);
+      perimPts.push(ll); drawPerim();
+    }, {passive:false});
+    map.getContainer().addEventListener('pointerup', ev=>{
+      if(!drawing) return;
+      drawing=false; document.getElementById('drawHint').style.display='none';
+      map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+      if(perimPts.length>2){ drawPerim(); savePerim(); toast('Perimeter saved'); } else { clearPerim(); }
+    });
+
+    // ===== Auto‑route within perimeter (serpentine sweep; offline)
+    let route=null, progress=null;
+    function clearRoute(){ if(route){ map.removeLayer(route); route=null; } if(progress){ map.removeLayer(progress); progress=null; } localStorage.removeItem(STORAGE_ROUTE); }
+    function saveRouteLLs(lls){ localStorage.setItem(STORAGE_ROUTE, JSON.stringify(lls.map(p=>({lat:p.lat,lng:p.lng})))); }
+    function loadRouteLLs(){ try{ const a=JSON.parse(localStorage.getItem(STORAGE_ROUTE)||'null'); if(a&&a.length){ const lls=a.map(o=>L.latLng(o.lat,o.lng)); drawRoute(lls); } }catch{} }
+    function drawRoute(lls){
+      if(route) map.removeLayer(route);
+      route=L.polyline(lls,{color:'#8e44ad',weight:5,opacity:0.8}).addTo(map);
+      if(progress) map.removeLayer(progress);
+      progress=L.polyline([], {color:'#27ae60',weight:6,opacity:0.9}).addTo(map);
+    }
+    function latLngToPoint(ll){ return map.latLngToLayerPoint(ll); }
+    function pointToLatLng(pt){ return map.layerPointToLatLng(pt); }
+    function insidePolygon(ptLatLng, polyLL){ // ray casting in pixel space for stability
+      const pts=polyLL.map(ll=>map.latLngToLayerPoint(ll)); const x=map.latLngToLayerPoint(ptLatLng).x, y=map.latLngToLayerPoint(ptLatLng).y;
+      let inside=false;
+      for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+        const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
+        const intersect=((yi>y)!=(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi);
+        if(intersect) inside=!inside;
+      }
+      return inside;
+    }
+    function generateSweepRoute(){
+      if(!car || !perimPts.length){ toast('Set car and draw perimeter'); return; }
+      // Build serpentine lines inside polygon bbox
+      const poly=perimPts.slice(); // closed automatically by Leaflet
+      const bbox=poly.reduce((b,ll)=>({minX:Math.min(b.minX,ll.lng), maxX:Math.max(b.maxX,ll.lng), minY:Math.min(b.minY,ll.lat), maxY:Math.max(b.maxY,ll.lat)}),{minX:Infinity,maxX:-Infinity,minY:Infinity,maxY:-Infinity});
+      // spacing ~40m
+      const spacingM=40;
+      // Convert lat diff for ~meters (approx)
+      const mPerDegLat=111320, mPerDegLng=111320*Math.cos((car.lat||map.getCenter().lat)*Math.PI/180);
+      const dy=spacingM/mPerDegLat;
+      const startLat=bbox.minY+dy/2, endLat=bbox.maxY-dy/2;
+      const xs=[bbox.minX,bbox.maxX];
+      let lines=[]; let dir=0;
+      for(let y=startLat; y<=endLat; y+=dy){
+        const line=[L.latLng(y, xs[dir?1:0]), L.latLng(y, xs[dir?0:1])];
+        // Clip by polygon: sample points along the line
+        const samples=60; const seg=[];
+        for(let i=0;i<=samples;i++){
+          const lng=line[0].lng + (line[1].lng-line[0].lng)*(i/samples);
+          const ll=L.latLng(y,lng);
+          if(insidePolygon(ll, poly)) seg.push(ll);
+        }
+        if(seg.length>1){ lines.push(seg); dir=1-dir; }
+      }
+      // Connect segments into one path starting/ending at car
+      const path=[L.latLng(car.lat,car.lng)];
+      // Order lines by nearest endpoint greedily
+      let cur=path[0];
+      function dist(a,b){ const R=6371000, toRad=d=>d*Math.PI/180; const dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
+        const s1=Math.sin(dLat/2), s2=Math.sin(dLng/2); const A=s1*s1+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2; return 2*R*Math.asin(Math.sqrt(A)); }
+      while(lines.length){
+        // pick line whose one end is closest to cur
+        let best={idx:0, rev:false, d:Infinity};
+        lines.forEach((seg,idx)=>{
+          const a=seg[0], b=seg[seg.length-1];
+          const d1=dist(cur,a), d2=dist(cur,b);
+          if(d1<best.d){ best={idx,rev:false,d:d1}; }
+          if(d2<best.d){ best={idx,rev:true,d:d2}; }
+        });
+        const seg=lines.splice(best.idx,1)[0];
+        const use=best.rev? seg.slice().reverse(): seg;
+        // connect
+        path.push(...use);
+        cur=use[use.length-1];
+      }
+      // return to car
+      path.push(L.latLng(car.lat,car.lng));
+      drawRoute(path); saveRouteLLs(path); toast('Route generated');
+    }
+
+    document.getElementById('autorouteBtn').onclick=generateSweepRoute;
+    document.getElementById('clearRouteBtn').onclick=()=>{ clearRoute(); };
+
+    // progress along route based on user position
+    function projectPointToPolyline(P, line){
+      if(!line || line.length<2) return {ok:false};
+      let best={ok:false, perp:Infinity, along:0}; let cum=0;
+      for(let i=0;i<line.length-1;i++){
+        const A=line[i], B=line[i+1];
+        const res=projectToSeg(P,A,B,cum); if(res.perp<best.perp){ best=res; } cum=res.cumNext;
+      }
+      return best;
+    }
+    function distM(a,b){
+      const R=6371000,toRad=d=>d*Math.PI/180; const dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
+      const s1=Math.sin(dLat/2), s2=Math.sin(dLng/2); const A=s1*s1+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2; return 2*R*Math.asin(Math.sqrt(A));
+    }
+    function projectToSeg(P,A,B,cumBefore){
+      const pA=map.latLngToLayerPoint(A), pB=map.latLngToLayerPoint(B), pP=map.latLngToLayerPoint(P);
+      const AB={x:pB.x-pA.x,y:pB.y-pA.y}, AP={x:pP.x-pA.x,y:pP.y-pA.y};
+      const ab2=AB.x*AB.x+AB.y*AB.y; let t=ab2===0?0:(AP.x*AB.x+AP.y*AB.y)/ab2; t=Math.max(0,Math.min(1,t));
+      const projPx={x:pA.x+t*AB.x,y:pA.y+t*AB.y}; const projLL=map.layerPointToLatLng(projPx);
+      const seg=distM(A,B); const perp=distM(P,projLL); const along=cumBefore+seg*t;
+      return {ok:true, perp, along, cumNext:cumBefore+seg};
+    }
+    function updateProgress(along){
+      if(!route||!progress) return;
+      const lls=route.getLatLngs(); const out=[]; let remain=along;
+      for(let i=0;i<lls.length-1;i++){
+        const A=lls[i], B=lls[i+1]; const seg=distM(A,B);
+        if(remain<=0) break;
+        if(remain>=seg){ if(out.length===0) out.push(A); out.push(B); remain-=seg; }
+        else { if(out.length===0) out.push(A);
+          const t=remain/seg; const pA=map.latLngToLayerPoint(A), pB=map.latLngToLayerPoint(B);
+          const pX={x:pA.x+t*(pB.x-pA.x), y:pA.y+t*(pB.y-pA.y)}; out.push(map.layerPointToLatLng(pX)); break; }
+      }
+      progress.setLatLngs(out);
+    }
+    navigator.geolocation && navigator.geolocation.watchPosition(pos=>{
+      const ll=L.latLng(pos.coords.latitude,pos.coords.longitude);
+      if(you) you.setLatLng(ll);
+      if(route){
+        const best=projectPointToPolyline(ll, route.getLatLngs());
+        if(best.ok) updateProgress(best.along);
+      }
+    }, err=>console.warn(err), {enableHighAccuracy:true, maximumAge:5000, timeout:10000});
+
+  </script>
+</body>
+</html>
