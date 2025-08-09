@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leaflet Map + Menu Diagnostic — v0</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html, body { height:100%; margin:0; }
+  #map { position:fixed; inset:0; }
+  #menuBtn {
+    position: fixed; top: 10px; right: 10px; z-index: 9999;
+    width: 44px; height: 44px; border-radius: 50%; border: none;
+    background: #111; color: #fff; font-size: 22px;
+  }
+  #panel {
+    position: fixed; top: 64px; right: 10px; z-index: 9998;
+    background: rgba(255,255,255,0.98); padding: 12px; border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.15); display: none;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size: 14px;
+  }
+  #panel.show { display: block; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<button id="menuBtn" title="Menu">☰</button>
+<div id="panel">Hello! If you can read this, the menu is working. Tap outside to hide.</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+  var map = L.map('map', { zoomControl: true });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+  map.setView([37.773972,-122.431297], 13);
+  if (navigator.geolocation) { map.locate({ setView:true, maxZoom: 18 }); }
+  setTimeout(function(){ map.invalidateSize(); }, 200);
+  setTimeout(function(){ map.invalidateSize(); }, 1000);
+
+  var btn = document.getElementById('menuBtn');
+  var panel = document.getElementById('panel');
+  btn.addEventListener('click', function(){
+    panel.classList.toggle('show');
+    alert('Menu button clicked'); // quick visual confirmation
+  });
+  document.addEventListener('pointerdown', function(e){
+    if(!(e.target.closest('#panel') || e.target.closest('#menuBtn'))){
+      panel.classList.remove('show');
+    }
+  }, { passive: true });
+});
+</script>
+</body>
+</html>
