@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sales Route Planner — Street Loop Beta 2</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html, body { height:100%; margin:0; }
+  #app { position:relative; height:100vh; width:100vw; overflow:hidden; }
+  #map { position:absolute; inset:0; }
+  .panel {
+    position:absolute; z-index:1000; background:rgba(255,255,255,0.98);
+    border-radius:12px; padding:12px; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    box-shadow:0 2px 10px rgba(0,0,0,0.15); font-size:14px;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  }
+  .legend { top:10px; left:10px; }
+  .toolbar { top:60px; right:10px; width:320px; max-width:92vw; max-height:70vh; overflow:auto; display:none; }
+  .toolbar.show { display:block; }
+  .row { display:flex; align-items:center; gap:6px; margin:4px 0; flex-wrap:wrap; }
+  .btn {
+    display:inline-block; padding:6px 10px; margin:2px 4px 2px 0; border:1px solid #ddd; border-radius:8px;
+    background:#f7f7f7; cursor:pointer; user-select:none;
+  }
+  .btn.primary { background:#0ea5e9; color:#fff; border-color:#0ea5e9; }
+  .marker-dot { width:18px; height:18px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 3px rgba(0,0,0,0.5); }
+  .car-emoji { font-size:26px; line-height:26px; transform:translate(-2px,-2px); }
+  .fab {
+    position:absolute; top:10px; right:10px; z-index:1103;
+    width:44px; height:44px; border-radius:50%; border:none;
+    background:#111; color:#fff; font-size:22px; line-height:44px; text-align:center;
+    box-shadow:0 3px 10px rgba(0,0,0,0.3); cursor:pointer;
+  }
+  /* Palette */
+  .palette { position:absolute; z-index:1102; background:#fff; border-radius:12px; padding:8px; display:none;
+    box-shadow:0 4px 12px rgba(0,0,0,0.25); border:1px solid #0001; }
+  .palette .opt { width:40px; height:40px; border-radius:50%; border:2px solid #fff;
+    display:inline-flex; align-items:center; justify-content:center; margin:6px;
+    box-shadow:0 0 4px rgba(0,0,0,.2);
+  }
+  /* Draw canvas */
+  #drawCanvas { position:absolute; inset:0; z-index:1101; display:none; }
+  /* Street preview footer */
+  #streetFooter { position:absolute; left:50%; transform:translateX(-50%); bottom:12px; z-index:1100;
+    display:none; background:rgba(255,255,255,0.98); border-radius:16px; padding:10px; box-shadow:0 4px 16px rgba(0,0,0,.2); }
+  #streetFooter.show { display:flex; gap:8px; align-items:center; }
+  .toast { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    background:rgba(0,0,0,.65); color:#fff; padding:6px 10px; border-radius:8px; font-size:12px; display:none; z-index:1200; }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="drawCanvas"></canvas>
+  <div id="map"></div>
+
+  <button id="menuBtn" class="fab">☰</button>
+  <div id="toast" class="toast"></div>
+
+  <div class="panel legend" id="legendPanel">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><div class="marker-dot" style="background:#000000;"></div> Not visited</div>
+    <div class="row"><div class="marker-dot" style="background:#3498db;"></div> Visited</div>
+    <div class="row"><div class="marker-dot" style="background:#f1c40f;"></div> Follow‑up</div>
+    <div class="row"><div class="marker-dot" style="background:#2ecc71;"></div> Wants to buy</div>
+    <div class="row"><div class="marker-dot" style="background:#e74c3c;"></div> No soliciting</div>
+    <div class="row"><span class="car-emoji">🚗</span> Parking (start/end)</div>
+  </div>
+
+  <div class="panel toolbar" id="settingsPanel">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:700;">Settings</div>
+      <button class="btn" id="closeSettings">Close</button>
+    </div>
+    <div style="margin-top:6px;font-weight:700;">Pins</div>
+    <div class="row">
+      <button class="btn" id="clearPins">Clear pins</button>
+    </div>
+    <div style="margin-top:6px;font-weight:700;">Parking & Area</div>
+    <div class="row">
+      <button class="btn" id="setParking">Set Parking (tap map)</button>
+      <button class="btn" id="drawPerimeterBtn">Draw perimeter</button>
+      <button class="btn" id="clearPerimeterBtn">Clear perimeter</button>
+    </div>
+    <div style="margin-top:6px;font-weight:700;">Route</div>
+    <div class="row">
+      <select id="routeMode">
+        <option value="serpentine">Serpentine (offline)</option>
+        <option value="sidewalk">One‑side street (approx)</option>
+        <option value="street">Street (OSM beta)</option>
+      </select>
+      <button class="btn primary" id="generateRouteBtn">Generate route</button>
+      <button class="btn" id="clearRouteBtn">Clear route</button>
+    </div>
+  </div>
+
+  <div id="streetFooter">
+    <span style="font-weight:600;">Street route preview</span>
+    <button class="btn primary" id="approveBtn">Approve</button>
+    <button class="btn" id="tryBtn">Try again</button>
+    <button class="btn" id="cancelBtn">Cancel</button>
+  </div>
+
+  <div id="palette" class="palette"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const COLOR = { NOT_VISITED:'#000000', VISITED:'#3498db', FOLLOW_UP:'#f1c40f', WANTS:'#2ecc71', NO_SOLICIT:'#e74c3c' };
+const PALETTE = [COLOR.NOT_VISITED, COLOR.VISITED, COLOR.FOLLOW_UP, COLOR.WANTS, COLOR.NO_SOLICIT];
+function toast(msg, ms=1200){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',ms); }
+
+// Map
+const map = L.map('map', { zoomControl:true });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{ attribution:'&copy; OpenStreetMap contributors' }).addTo(map);
+map.setView([37.773972,-122.431297], 13);
+if (navigator.geolocation) { map.locate({ setView:true, maxZoom:18 }); }
+window.addEventListener('load', ()=> setTimeout(()=> map.invalidateSize(), 100));
+
+// Menu
+const menuBtn=document.getElementById('menuBtn');
+const settings=document.getElementById('settingsPanel');
+menuBtn.addEventListener('click', ()=> settings.classList.toggle('show'));
+document.getElementById('closeSettings').addEventListener('click', ()=> settings.classList.remove('show'));
+document.addEventListener('pointerdown', (e)=>{ const t=e.target; if(!(t.closest('.toolbar')||t.closest('.fab')||t.closest('.leaflet-control'))) settings.classList.remove('show'); }, {passive:true});
+function closeMenuAfter(fn){ return (...args)=>{ settings.classList.remove('show'); fn(...args); }; }
+
+// Pins
+const pins=new Map();
+function newId(){ return 'p_'+Date.now()+'_'+Math.floor(Math.random()*1e6); }
+function dot(color){ return L.divIcon({className:'',html:`<div class="marker-dot" style="background:${color}"></div>`,iconSize:[18,18],iconAnchor:[9,9],popupAnchor:[0,-9]}); }
+function addPinAt(latlng, color){ const p={id:newId(), lat:latlng.lat,lng:latlng.lng,color}; const m=L.marker(latlng,{icon:dot(color)}).addTo(map); p._m=m; pins.set(p.id,p); }
+document.getElementById('clearPins').addEventListener('click', closeMenuAfter(()=>{ pins.forEach(p=>p._m.remove()); pins.clear(); }));
+
+// Car
+let car=null, carMarker=null;
+function carIcon(){ return L.divIcon({className:'',html:`<div class="car-emoji">🚗</div>`,iconSize:[26,26],iconAnchor:[13,13]}); }
+function placeCar(latlng){ if(carMarker) carMarker.remove(); car={lat:latlng.lat,lng:latlng.lng}; carMarker=L.marker(latlng,{icon:carIcon(),interactive:true}).addTo(map); bindCarDrag(); }
+function bindCarDrag(){
+  const icon=carMarker._icon; if(!icon) return;
+  let timer=null, dragging=false, pointerId=null; const offset={x:-16,y:-24};
+  function onDown(e){ e.preventDefault(); clearTimeout(timer); timer=setTimeout(()=>{ dragging=true; pointerId=e.pointerId; map.dragging.disable(); map.touchZoom.disable(); },700); }
+  function onMove(e){ if(!dragging||e.pointerId!==pointerId) return; e.preventDefault(); const pt=map.mouseEventToContainerPoint(e); const pinPt={x:pt.x+offset.x,y:pt.y+offset.y}; carMarker.setLatLng(map.containerPointToLatLng(pinPt)); }
+  function onUp(e){ clearTimeout(timer); if(dragging&&e.pointerId===pointerId){ e.preventDefault(); const pt=map.mouseEventToContainerPoint(e); const pinPt={x:pt.x+offset.x,y:pt.y+offset.y}; placeCar(map.containerPointToLatLng(pinPt)); } dragging=false; pointerId=null; map.dragging.enable(); map.touchZoom.enable(); }
+  icon.addEventListener('pointerdown', onDown, {passive:false});
+  icon.addEventListener('pointermove', onMove, {passive:false});
+  icon.addEventListener('pointerup', onUp, {passive:false});
+  icon.addEventListener('pointercancel', onUp, {passive:false});
+}
+document.getElementById('setParking').addEventListener('click', closeMenuAfter(()=>{ toast('Tap the map to set parking'); map.once('click', e=> placeCar(e.latlng)); }));
+
+// Palette (long-press then tap to choose)
+const palette=document.getElementById('palette');
+let longTimer=null, pressPt=null, pressLL=null;
+function buildPalette(){ palette.innerHTML = PALETTE.map(c=>`<div class="opt" data-type="note" data-color="${c}" style="background:${c}"></div>`).join('') + `<div class="opt" data-type="car" style="background:#fff;">🚗</div>`; }
+function showPalette(pt){ buildPalette(); palette.style.left=(pt.x-110)+'px'; palette.style.top=(pt.y-80)+'px'; palette.style.display='block'; }
+function hidePalette(){ palette.style.display='none'; }
+const mapEl=map.getContainer();
+mapEl.addEventListener('pointerdown', (e)=>{
+  if(e.target.closest('.leaflet-marker-icon')) return;
+  if(e.pointerType==='touch' && e.isPrimary===false) return;
+  pressPt=map.mouseEventToContainerPoint(e); pressLL=map.containerPointToLatLng(pressPt);
+  clearTimeout(longTimer); longTimer=setTimeout(()=>{ showPalette(pressPt); },1000);
+}, {passive:false});
+mapEl.addEventListener('pointermove', (e)=>{ if(!longTimer) return; const pt=map.mouseEventToContainerPoint(e); if(Math.hypot(pt.x-pressPt.x, pt.y-pressPt.y)>8){ clearTimeout(longTimer); longTimer=null; } }, {passive:false});
+mapEl.addEventListener('pointerup', ()=>{ if(longTimer){ clearTimeout(longTimer); longTimer=null; }});
+palette.addEventListener('click', (e)=>{ const opt=e.target.closest('.opt'); if(!opt) return; hidePalette(); const type=opt.getAttribute('data-type'); if(type==='car'){ placeCar(pressLL); } else { addPinAt(pressLL, opt.getAttribute('data-color')); } });
+
+// Draw perimeter (canvas overlay)
+const canvas = document.getElementById('drawCanvas'); const ctx = canvas.getContext('2d');
+let drawing=false, perimPts=[], perimPoly=null;
+function sizeCanvas(){ const r = canvas.getBoundingClientRect(); canvas.width = r.width * devicePixelRatio; canvas.height = r.height * devicePixelRatio; ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); }
+function redrawCanvas(){ ctx.clearRect(0,0,canvas.width,canvas.height); if(!drawing||perimPts.length<2) return; ctx.lineWidth=3; ctx.strokeStyle='#f97316'; ctx.beginPath(); ctx.moveTo(perimPts[0].x, perimPts[0].y); for(let i=1;i<perimPts.length;i++){ ctx.lineTo(perimPts[i].x, perimPts[i].y); } ctx.stroke(); }
+function startDraw(){ sizeCanvas(); canvas.style.display='block'; perimPts=[]; drawing=true; map.dragging.disable(); map.touchZoom.disable(); }
+function endDraw(){ drawing=false; canvas.style.display='none'; map.dragging.enable(); map.touchZoom.enable(); if(perimPts.length>2){ const latlngs = perimPts.map(p=> map.containerPointToLatLng([p.x,p.y])); if(perimPoly) perimPoly.remove(); perimPoly=L.polygon(latlngs,{color:'#2563eb',weight:3,opacity:0.9,fill:true,fillOpacity:0.08}).addTo(map); } }
+canvas.addEventListener('pointerdown', (e)=>{ if(!drawing) return; e.preventDefault(); perimPts=[{x:e.offsetX,y:e.offsetY}]; redrawCanvas(); }, {passive:false});
+canvas.addEventListener('pointermove', (e)=>{ if(!drawing) return; e.preventDefault(); perimPts.push({x:e.offsetX,y:e.offsetY}); redrawCanvas(); }, {passive:false});
+canvas.addEventListener('pointerup', (e)=>{ if(drawing) endDraw(); }, {passive:false});
+canvas.addEventListener('pointercancel', (e)=>{ if(drawing) endDraw(); }, {passive:false});
+map.on('move', ()=>{ if(drawing){ sizeCanvas(); redrawCanvas(); }});
+window.addEventListener('resize', ()=>{ if(drawing){ sizeCanvas(); redrawCanvas(); }});
+document.getElementById('drawPerimeterBtn').addEventListener('click', closeMenuAfter(()=> startDraw()));
+document.getElementById('clearPerimeterBtn').addEventListener('click', closeMenuAfter(()=>{ if(perimPoly){ perimPoly.remove(); perimPoly=null; } }));
+
+// Route layers
+let route=null, previewLayer=null;
+function clearRoute(){ if(route){ route.remove(); route=null; } if(previewLayer){ previewLayer.remove(); previewLayer=null; } document.getElementById('streetFooter').classList.remove('show'); }
+document.getElementById('clearRouteBtn').addEventListener('click', closeMenuAfter(()=> clearRoute()));
+
+// Offline modes as fallback
+function distM(a,b){ const R=6371000, toRad=d=>d*Math.PI/180; const dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng); const s1=Math.sin(dLat/2), s2=Math.sin(dLng/2); const A=s1*s1 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2; return 2*R*Math.asin(Math.sqrt(A)); }
+function insidePolygon(ptLatLng, polyLL){ const pts=polyLL.map(ll=>map.latLngToLayerPoint(ll)); const p=map.latLngToLayerPoint(ptLatLng); const x=p.x, y=p.y; let inside=false; for(let i=0,j=pts.length-1;i<pts.length;j=i++){ const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y; const intersect=((yi>y)!=(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi); if(intersect) inside=!inside; } return inside; }
+function generateSerpentine(perimPtsLL, startLL){
+  const bbox=perimPtsLL.reduce((b,ll)=>({minX:Math.min(b.minX,ll.lng), maxX:Math.max(b.maxX,ll.lng), minY:Math.min(b.minY,ll.lat), maxY:Math.max(b.maxY,ll.lat)}),{minX:Infinity,maxX:-Infinity,minY:Infinity,maxY:-Infinity});
+  const spacingM=40, mPerDegLat=111320, dy=spacingM/mPerDegLat; const startLat=bbox.minY+dy/2, endLat=bbox.maxY-dy/2; const xs=[bbox.minX,bbox.maxX];
+  let lines=[]; let dir=0;
+  for(let y=startLat; y<=endLat; y+=dy){ const a=L.latLng(y, xs[dir?1:0]), b=L.latLng(y, xs[dir?0:1]); const samples=60; const seg=[]; for(let i=0;i<=samples;i++){ const lng=a.lng+(b.lng-a.lng)*(i/samples); const ll=L.latLng(y,lng); if(insidePolygon(ll, perimPtsLL)) seg.push(ll); } if(seg.length>1){ lines.push(seg); dir=1-dir; } }
+  const path=[startLL]; let cur=startLL;
+  while(lines.length){ let best={idx:0, rev:false, d:Infinity}; lines.forEach((seg,idx)=>{ const a=seg[0], b=seg[seg.length-1]; const d1=distM(cur,a), d2=distM(cur,b); if(d1<best.d){ best={idx,rev:false,d:d1}; } if(d2<best.d){ best={idx,rev:true,d:d2}; } }); const seg=lines.splice(best.idx,1)[0]; const use=best.rev? seg.slice().reverse(): seg; path.push(...use); cur=use[use.length-1]; }
+  path.push(startLL); return path;
+}
+function offsetPolyline(lls, meters){ if(lls.length<2) return lls.slice(); const out=[]; for(let i=0;i<lls.length;i++){ const P = map.latLngToLayerPoint(lls[i]); const A = map.latLngToLayerPoint(lls[Math.max(0,i-1)]); const B = map.latLngToLayerPoint(lls[Math.min(lls.length-1,i+1)]); const dx = B.x - A.x, dy = B.y - A.y; const len = Math.hypot(dx,dy)||1; let nx = -dy/len, ny = dx/len; const px = P.x + nx * meters, py = P.y + ny * meters; out.push(map.layerPointToLatLng(L.point(px,py))); } return out; }
+function generateSidewalk(perimPtsLL, startLL){ const spine = generateSerpentine(perimPtsLL, startLL); const A = map.latLngToLayerPoint(startLL); const B = map.latLngToLayerPoint(L.latLng(startLL.lat + 0.0001, startLL.lng)); const pxPerMeter = Math.abs(B.y - A.y) / (0.0001 * 111320); const offsetPx = 7 * pxPerMeter; const left = offsetPolyline(spine, offsetPx); const right = offsetPolyline(spine, -offsetPx); return [startLL, ...left, ...right.reverse(), startLL]; }
+
+// OSM Street mode
+async function fetchStreetsInPerimeter(){
+  const perim = perimPoly && perimPoly.getLatLngs()[0]; if(!perim || perim.length<3) return null;
+  const poly = `poly:"${perim.map(ll=> ll.lat+' '+ll.lng).join(' ')}"`;
+  const q = `[out:json][timeout:25];
+    way[highway~"^(residential|unclassified|tertiary|secondary|primary|service)$"][service!~"^(parking_aisle|driveway)$"](${poly});
+    (._;>;); out body;`;
+  const url = "https://overpass-api.de/api/interpreter";
+  const ctrl = new AbortController(); const to = setTimeout(()=>ctrl.abort(), 25000);
+  const resp = await fetch(url, {method:'POST', body:q, signal:ctrl.signal, headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'}});
+  clearTimeout(to);
+  if(!resp.ok) throw new Error('overpass');
+  const data = await resp.json();
+  const nodes = new Map(); (data.elements||[]).filter(e=>e.type==='node').forEach(n=>nodes.set(n.id, L.latLng(n.lat, n.lon)));
+  const ways = (data.elements||[]).filter(e=>e.type==='way').map(w=>{
+    const pts=[]; (w.nodes||[]).forEach(id=>{ const ll=nodes.get(id); if(ll) pts.push(ll); }); return {id:w.id, pts};
+  }).filter(w=>w.pts.length>1);
+  return ways;
+}
+function pointToLineDist(ll, segA, segB){
+  const pA=map.latLngToLayerPoint(segA), pB=map.latLngToLayerPoint(segB), pP=map.latLngToLayerPoint(ll);
+  const AB={x:pB.x-pA.x,y:pB.y-pA.y}, AP={x:pP.x-pA.x,y:pP.y-pA.y};
+  const ab2=AB.x*AB.x+AB.y*AB.y; let t=ab2===0?0:(AP.x*AB.x+AP.y*AB.y)/ab2; t=Math.max(0,Math.min(1,t));
+  const proj={x:pA.x+t*AB.x,y:pA.y+t*AB.y}; const projLL=map.layerPointToLatLng(proj);
+  // return distance (meters) and t
+  const R=6371000; function dM(P,Q){ return map.distance(P,Q); }
+  return {d:dM(ll, projLL), t, projLL};
+}
+function nearestPointOnWay(ll, wayPts){
+  let best={d:Infinity, idx:0, t:0, projLL:wayPts[0]};
+  for(let i=0;i<wayPts.length-1;i++){ const res=pointToLineDist(ll, wayPts[i], wayPts[i+1]); if(res.d<best.d){ best={d:res.d, idx:i, t:res.t, projLL:res.projLL}; } }
+  return best;
+}
+function sliceWayWithinPerimeter(pts){
+  if(!perimPoly) return pts;
+  // keep nodes whose midpoints are inside perimeter
+  return pts.filter(ll => perimPoly.getBounds().contains(ll)); // coarse: bbox clip for now
+}
+function buildOneStreetLoop(wayPts, startLL){
+  // project start, then take entire way inside perimeter in both directions, build offset two passes.
+  const insidePts = sliceWayWithinPerimeter(wayPts);
+  if(insidePts.length<2) return null;
+  // order such that start is closest to some segment; then choose forward/backward
+  const near = nearestPointOnWay(startLL, insidePts);
+  // Build continuous polyline: from projection to end, then to other end.
+  const a = near.idx, t=near.t;
+  const seq = insidePts.slice(); // copy
+  // Build path forward then backward
+  const forward = [near.projLL, ...seq.slice(near.idx+1)];
+  const backward = [...seq.slice(0, near.idx+1)].reverse();
+  // offset passes ~7m
+  const A = map.latLngToLayerPoint(startLL); const B = map.latLngToLayerPoint(L.latLng(startLL.lat + 0.0001, startLL.lng));
+  const pxPerMeter = Math.abs(B.y - A.y) / (0.0001 * 111320); const offsetPx = 7 * pxPerMeter;
+  function offsetLLs(list, sign){ const out=[]; for(let i=0;i<list.length;i++){ const P = map.latLngToLayerPoint(list[i]); const Pm = map.latLngToLayerPoint(list[Math.min(list.length-1,i+1)]); const A = map.latLngToLayerPoint(list[Math.max(0,i-1)]); const dx= Pm.x - A.x, dy=Pm.y - A.y; const len=Math.hypot(dx,dy)||1; const nx = -dy/len, ny = dx/len; const px = P.x + sign*offsetPx*nx, py=P.y + sign*offsetPx*ny; out.push(map.layerPointToLatLng(L.point(px,py))); } return out; }
+  const left = offsetLLs(forward, +1);
+  const right = offsetLLs(forward, -1).reverse();
+  return [startLL, ...left, ...right, startLL];
+}
+
+// Approve/Try/Cancel UI
+const streetFooter = document.getElementById('streetFooter');
+let streetWays = [], streetPickIdx = 0, previewRouteLLs = null;
+function showFooter(){ streetFooter.classList.add('show'); }
+function hideFooter(){ streetFooter.classList.remove('show'); }
+document.getElementById('approveBtn').addEventListener('click', ()=>{
+  if(!previewRouteLLs) return;
+  if(route) route.remove();
+  route = L.polyline(previewRouteLLs, {color:'#8e44ad',weight:5,opacity:0.9}).addTo(map);
+  if(previewLayer){ previewLayer.remove(); previewLayer=null; }
+  hideFooter();
+});
+document.getElementById('cancelBtn').addEventListener('click', ()=>{ if(previewLayer){ previewLayer.remove(); previewLayer=null; } hideFooter(); });
+document.getElementById('tryBtn').addEventListener('click', ()=>{
+  if(streetWays.length<=1){ toast('No alternative nearby'); return; }
+  streetPickIdx = (streetPickIdx+1) % streetWays.length;
+  previewFromWay(streetWays[streetPickIdx]);
+});
+
+function previewFromWay(way){
+  if(previewLayer){ previewLayer.remove(); previewLayer=null; }
+  // draw pink dashed centerline
+  const center = L.polyline(way.pts, {color:'#ec4899',weight:4,opacity:0.7,dashArray:'6,6'});
+  // build loop route
+  const start = L.latLng(car.lat, car.lng);
+  const loop = buildOneStreetLoop(way.pts, start);
+  previewRouteLLs = loop;
+  const loopLine = loop ? L.polyline(loop, {color:'#fdba74',weight:6,opacity:0.9}) : null;
+  const group = loopLine ? L.layerGroup([center, loopLine]) : L.layerGroup([center]);
+  previewLayer = group.addTo(map);
+  showFooter();
+}
+
+async function streetModeGenerate(){
+  if(!car){ toast('Set parking first'); return; }
+  if(!perimPoly){ toast('Draw perimeter first'); return; }
+  try{
+    const ways = await fetchStreetsInPerimeter();
+    if(!ways || ways.length===0){ toast('No streets here'); return; }
+    // sort by distance of car to way
+    ways.sort((w1,w2)=>{
+      function dToWay(w){ let best=1e12; for(let i=0;i<w.pts.length-1;i++){ const r=pointToLineDist(L.latLng(car.lat,car.lng), w.pts[i], w.pts[i+1]); if(r.d<best) best=r.d; } return best; }
+      return dToWay(w1)-dToWay(w2);
+    });
+    streetWays = ways;
+    streetPickIdx = 0;
+    previewFromWay(ways[0]);
+  }catch(e){ console.warn(e); toast('Street data unavailable'); }
+}
+
+document.getElementById('generateRouteBtn').addEventListener('click', closeMenuAfter(()=>{
+  if(!car || !perimPoly){ toast('Set parking and draw perimeter'); return; }
+  const mode = document.getElementById('routeMode').value;
+  if(mode==='street'){ streetModeGenerate(); return; }
+  // offline modes
+  const perimLL = perimPoly.getLatLngs()[0];
+  const start = L.latLng(car.lat,car.lng);
+  const path = (mode==='sidewalk') ? generateSidewalk(perimLL, start) : generateSerpentine(perimLL, start);
+  if(route) route.remove(); route = L.polyline(path,{color:'#8e44ad',weight:5,opacity:0.85}).addTo(map);
+}));
+
+</script>
+</body>
+</html>
