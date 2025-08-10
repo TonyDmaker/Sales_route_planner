@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sales Route Planner — v3 + Draw + Street Mode (beta)</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html, body { height:100%; margin:0; }
+  #app { position:relative; height:100vh; width:100vw; overflow:hidden; }
+  #map { position:absolute; inset:0; height:100%; width:100%; z-index:1; }
+  /* Panels */
+  .panel {
+    position:absolute; z-index:1000; background:rgba(255,255,255,0.98);
+    border-radius:12px; padding:12px; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    box-shadow:0 2px 10px rgba(0,0,0,0.15); font-size:14px;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  }
+  .legend { top:10px; left:10px; z-index:2; }
+  .toolbar { top:60px; right:10px; width:340px; max-width:92vw; max-height:70vh; overflow:auto; display:none; z-index:3; }
+  .toolbar.show { display:block; }
+  .row { display:flex; align-items:center; gap:6px; margin:4px 0; flex-wrap:wrap; }
+  .btn {
+    display:inline-block; padding:6px 10px; margin:2px 4px 2px 0; border:1px solid #ddd; border-radius:8px;
+    background:#f7f7f7; cursor:pointer; user-select:none;
+  }
+  .btn.primary { background:#0ea5e9; color:#fff; border-color:#0ea5e9; }
+  .marker-dot { width:18px; height:18px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 3px rgba(0,0,0,0.5); }
+  .car-emoji { font-size:26px; line-height:26px; transform:translate(-2px,-2px); }
+  /* Palette */
+  .palette {
+    position:absolute; z-index:1102; background:#fff; border-radius:12px; padding:8px; display:none;
+    box-shadow:0 4px 12px rgba(0,0,0,0.25); border:1px solid #0001;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  }
+  .palette .opt { width:36px; height:36px; border-radius:50%; border:2px solid #fff;
+    display:inline-flex; align-items:center; justify-content:center; margin:6px;
+    box-shadow:0 0 4px rgba(0,0,0,.2);
+  }
+  /* Floating menu button */
+  .fab {
+    position:absolute; top:10px; right:10px; z-index:1103;
+    width:44px; height:44px; border-radius:50%; border:none;
+    background:#111; color:#fff; font-size:22px; line-height:44px; text-align:center;
+    box-shadow:0 3px 10px rgba(0,0,0,0.3); cursor:pointer;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  }
+  .toast { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    background:rgba(0,0,0,.65); color:#fff; padding:6px 10px; border-radius:8px; font-size:12px; display:none; z-index:1200; }
+  .hint { position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,.7); color:#fff; padding:6px 10px; border-radius:8px; font-size:12px; display:none; z-index:1200; }
+  /* Draw overlay canvas */
+  #drawCanvas { position:absolute; inset:0; z-index:5; pointer-events:none; }
+  /* Approve banner */
+  .approve-bar {
+    position:absolute; bottom:12px; left:50%; transform:translateX(-50%); z-index:6;
+    background:rgba(255,255,255,0.95); border:1px solid #ddd; border-radius:999px; padding:8px 12px;
+    display:none; gap:8px; align-items:center; box-shadow:0 2px 10px rgba(0,0,0,0.15);
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; user-select:none;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <canvas id="drawCanvas"></canvas>
+
+  <button id="menuBtn" class="fab" title="Settings">☰</button>
+  <div id="toast" class="toast"></div>
+  <div id="drawHint" class="hint">Draw a loop; lift to finish</div>
+
+  <div class="panel legend" id="legendPanel">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><div class="marker-dot" style="background:#000000;"></div> Not visited</div>
+    <div class="row"><div class="marker-dot" style="background:#3498db;"></div> Visited</div>
+    <div class="row"><div class="marker-dot" style="background:#f1c40f;"></div> Follow‑up</div>
+    <div class="row"><div class="marker-dot" style="background:#2ecc71;"></div> Wants to buy</div>
+    <div class="row"><div class="marker-dot" style="background:#e74c3c;"></div> No soliciting</div>
+    <div class="row"><span class="car-emoji">🚗</span> Parking (start/end)</div>
+  </div>
+
+  <div class="panel toolbar" id="settingsPanel">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:700;">Settings</div>
+      <button class="btn" id="closeSettings">Close</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Pins</div>
+    <div class="row">
+      <button class="btn" id="clearPins">Clear pins</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Parking & Area</div>
+    <div class="row">
+      <button class="btn" id="setParking">Set Parking (tap map)</button>
+      <button class="btn" id="centerCar">Center on Parking</button>
+      <button class="btn" id="clearCar">Clear Parking</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="drawPerimeterBtn">Draw perimeter</button>
+      <button class="btn" id="clearPerimeterBtn">Clear perimeter</button>
+    </div>
+
+    <div style="margin-top:6px;font-weight:700;">Route</div>
+    <div class="row">
+      <select id="routeMode">
+        <option value="serpentine">Serpentine (offline)</option>
+        <option value="sidewalk">One‑side street (geom)</option>
+        <option value="street">Street mode (beta)</option>
+      </select>
+      <button class="btn primary" id="generateRouteBtn">Generate route</button>
+      <button class="btn" id="clearRouteBtn">Clear route</button>
+    </div>
+  </div>
+
+  <div id="palette" class="palette"></div>
+
+  <div class="approve-bar" id="approveBar">
+    <span>Street route preview</span>
+    <button class="btn primary" id="approveRoute">Approve</button>
+    <button class="btn" id="retryRoute">Try again</button>
+    <button class="btn" id="cancelRoute">Cancel</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ===== Base map =====
+const map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+map.setView([37.773972,-122.431297], 15);
+if (navigator.geolocation) map.locate({setView:true,maxZoom:18});
+window.addEventListener('load', ()=> setTimeout(()=> map.invalidateSize(), 100));
+
+// ===== UI helpers =====
+function toast(msg, ms=1200){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none',ms); }
+const settings=document.getElementById('settingsPanel');
+document.getElementById('menuBtn').onclick=()=>settings.classList.toggle('show');
+document.getElementById('closeSettings').onclick=()=>settings.classList.remove('show');
+document.addEventListener('pointerdown', (e)=>{
+  const t=e.target; if(!(t.closest('.toolbar')||t.closest('.fab')||t.closest('.leaflet-control'))) settings.classList.remove('show');
+},{passive:true});
+
+// ===== Pins & palette (tap to select) =====
+const PALETTE_COLORS=['#000000','#3498db','#f1c40f','#2ecc71','#e74c3c'];
+const palette=document.getElementById('palette');
+let palettePressLL=null;
+function buildPalette(){
+  palette.innerHTML = PALETTE_COLORS.map(c=>`<div class="opt" data-color="${c}" style="background:${c}"></div>`).join('') + `<div class="opt" data-car="1" style="background:#fff;">🚗</div>`;
+}
+map.on('contextmenu', e=>e.originalEvent.preventDefault());
+map.on('mousedown touchstart', function(ev){
+  if (ev.originalEvent.touches && ev.originalEvent.touches.length>1) return;
+  const isMarker = ev.originalEvent.target.closest && ev.originalEvent.target.closest('.leaflet-marker-icon');
+  if (isMarker) return;
+  palettePressLL = ev.latlng;
+  let timer=setTimeout(()=>{
+    buildPalette();
+    const pt=map.latLngToContainerPoint(ev.latlng);
+    palette.style.left=(pt.x-110)+'px'; palette.style.top=(pt.y-80)+'px';
+    palette.style.display='block';
+  }, 1000);
+  function cancel(){
+    clearTimeout(timer);
+    map.off('mousemove touchmove', move);
+    map.off('mouseup touchend touchcancel', up);
+  }
+  function move(){ /* if user moves a lot before long-press, cancel */ }
+  function up(){ cancel(); }
+  map.on('mousemove touchmove', move);
+  map.on('mouseup touchend touchcancel', up);
+});
+
+palette.addEventListener('click', (e)=>{
+  const opt=e.target.closest('.opt'); if(!opt) return;
+  palette.style.display='none';
+  if (opt.dataset.car){
+    placeCar(palettePressLL);
+  } else {
+    addPinAtLL(palettePressLL, opt.dataset.color);
+  }
+});
+
+const pins=new Map();
+function newId(){ return 'p_'+Date.now()+'_'+Math.floor(Math.random()*1e6); }
+function dot(color){ return L.divIcon({className:'',html:`<div class="marker-dot" style="background:${color}"></div>`,iconSize:[18,18],iconAnchor:[9,9],popupAnchor:[0,-9]}); }
+function addPinAtLL(latlng,color){
+  const id=newId(); const m=L.marker(latlng,{icon:dot(color)}).addTo(map); pins.set(id,{id,latlng,color,marker:m});
+}
+document.getElementById('clearPins').onclick=()=>{ pins.forEach(p=>p.marker.remove()); pins.clear(); settings.classList.remove('show'); };
+
+// ===== Car marker with long-press move =====
+let carMarker=null;
+function carIcon(){ return L.divIcon({className:'',html:`<div class="car-emoji">🚗</div>`,iconSize:[26,26],iconAnchor:[13,13]}); }
+function placeCar(ll){ if(carMarker) carMarker.remove(); carMarker=L.marker(ll,{icon:carIcon()}).addTo(map); bindCarDrag(); }
+function bindCarDrag(){
+  const icon=carMarker._icon; if(!icon) return;
+  let timer=null, dragging=false, pointerId=null;
+  const offset={x:-16,y:-24};
+  function onDown(e){
+    if(e.pointerType==='touch' && e.isPrimary===false) return;
+    e.preventDefault();
+    clearTimeout(timer);
+    timer=setTimeout(()=>{
+      dragging=true; pointerId=e.pointerId; map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+      icon.setPointerCapture && icon.setPointerCapture(pointerId);
+    },700);
+  }
+  function onMove(e){
+    if(!dragging || e.pointerId!==pointerId) return;
+    e.preventDefault();
+    const pt=map.mouseEventToContainerPoint(e);
+    const pinPt={x:pt.x+offset.x,y:pt.y+offset.y};
+    const ll=map.containerPointToLatLng(pinPt);
+    carMarker.setLatLng(ll);
+  }
+  function onUp(e){
+    clearTimeout(timer);
+    if(dragging && e.pointerId===pointerId){
+      e.preventDefault();
+      const pt=map.mouseEventToContainerPoint(e);
+      const pinPt={x:pt.x+offset.x,y:pt.y+offset.y};
+      const ll=map.containerPointToLatLng(pinPt);
+      placeCar(ll);
+    }
+    dragging=false; pointerId=null; map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+  }
+  icon.addEventListener('pointerdown', onDown, {passive:false});
+  icon.addEventListener('pointermove', onMove, {passive:false});
+  icon.addEventListener('pointerup', onUp, {passive:false});
+  icon.addEventListener('pointercancel', onUp, {passive:false});
+}
+document.getElementById('setParking').onclick=()=>{ settings.classList.remove('show'); toast('Tap the map'); map.once('click', e=>placeCar(e.latlng)); };
+document.getElementById('centerCar').onclick=()=>{ settings.classList.remove('show'); if(carMarker) map.panTo(carMarker.getLatLng()); };
+document.getElementById('clearCar').onclick=()=>{ settings.classList.remove('show'); if(carMarker){ carMarker.remove(); carMarker=null; }};
+
+// ===== Draw perimeter (canvas overlay) =====
+let perimPoly=null;
+const drawCanvas=document.getElementById('drawCanvas'); const ctx=drawCanvas.getContext('2d');
+function resizeCanvas(){ drawCanvas.width=drawCanvas.clientWidth=map.getSize().x; drawCanvas.height=drawCanvas.clientHeight=map.getSize().y; }
+window.addEventListener('resize', ()=>{ resizeCanvas(); if(perimPoly) perimPoly.redraw && perimPoly.redraw(); });
+resizeCanvas();
+let drawing=false, drawPts=[];
+document.getElementById('drawPerimeterBtn').onclick=()=>{
+  settings.classList.remove('show');
+  drawing=true; drawPts=[]; ctx.clearRect(0,0,drawCanvas.width, drawCanvas.height);
+  drawCanvas.style.pointerEvents='auto'; document.getElementById('drawHint').style.display='block';
+  map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+};
+document.getElementById('clearPerimeterBtn').onclick=()=>{
+  settings.classList.remove('show');
+  if(perimPoly){ perimPoly.remove(); perimPoly=null; } ctx.clearRect(0,0,drawCanvas.width, drawCanvas.height);
+};
+drawCanvas.addEventListener('touchstart', onDrawStart, {passive:false}); drawCanvas.addEventListener('mousedown', onDrawStart);
+drawCanvas.addEventListener('touchmove', onDrawMove, {passive:false}); drawCanvas.addEventListener('mousemove', onDrawMove);
+drawCanvas.addEventListener('touchend', onDrawEnd); drawCanvas.addEventListener('mouseup', onDrawEnd);
+function getEvtPoint(e){ const t=e.touches? e.touches[0]: e; return {x:t.clientX - drawCanvas.getBoundingClientRect().left, y:t.clientY - drawCanvas.getBoundingClientRect().top}; }
+function onDrawStart(e){ if(!drawing) return; e.preventDefault(); drawPts=[]; const p=getEvtPoint(e); drawPts.push(p); renderStroke(); }
+function onDrawMove(e){ if(!drawing) return; e.preventDefault(); const p=getEvtPoint(e); drawPts.push(p); renderStroke(); }
+function onDrawEnd(e){
+  if(!drawing) return;
+  drawing=false; document.getElementById('drawHint').style.display='none';
+  drawCanvas.style.pointerEvents='none'; map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+  if(drawPts.length<5){ ctx.clearRect(0,0,drawCanvas.width, drawCanvas.height); return; }
+  // Build polygon in latlngs
+  const latlngs = drawPts.map(pt=> map.containerPointToLatLng(L.point(pt.x, pt.y)));
+  if(perimPoly) perimPoly.remove();
+  perimPoly = L.polygon(latlngs, {color:'#2563eb', weight:3, opacity:0.9, fill:true, fillOpacity:0.08}).addTo(map);
+  ctx.clearRect(0,0,drawCanvas.width, drawCanvas.height);
+}
+function renderStroke(){
+  ctx.clearRect(0,0,drawCanvas.width, drawCanvas.height);
+  if(drawPts.length<2) return;
+  ctx.lineWidth=3; ctx.strokeStyle='#ff8800'; ctx.beginPath(); ctx.moveTo(drawPts[0].x, drawPts[0].y);
+  for(let i=1;i<drawPts.length;i++) ctx.lineTo(drawPts[i].x, drawPts[i].y);
+  ctx.stroke();
+}
+
+// ===== Route generation =====
+let route=null, previewRoute=null, approveIdx=0, streetCandidates=[];
+function clearRoute(){ if(route){ route.remove(); route=null; } if(previewRoute){ previewRoute.remove(); previewRoute=null; } document.getElementById('approveBar').style.display='none'; }
+document.getElementById('clearRouteBtn').onclick=()=>{ settings.classList.remove('show'); clearRoute(); };
+document.getElementById('generateRouteBtn').onclick=()=>{
+  settings.classList.remove('show');
+  if(!perimPoly){ toast('Draw perimeter first'); return; }
+  if(!carMarker){ toast('Place the car first'); return; }
+  const mode = document.getElementById('routeMode').value;
+  if(mode==='serpentine'){ genSerpentine(); }
+  else if(mode==='sidewalk'){ genSidewalk(); }
+  else { genStreetBeta(); }
+};
+
+function distM(a,b){
+  const R=6371000,toRad=d=>d*Math.PI/180; const dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
+  const s1=Math.sin(dLat/2), s2=Math.sin(dLng/2); const A=s1*s1+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*s2*s2; return 2*R*Math.asin(Math.sqrt(A));
+}
+function insidePolyLL(ll, poly){
+  // ray cast in pixel space for stability
+  const pts=poly.map(ll=>map.latLngToLayerPoint(ll)); const p=map.latLngToLayerPoint(ll); const x=p.x,y=p.y; let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){ const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
+    const intersect=((yi>y)!=(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi); if(intersect) inside=!inside; }
+  return inside;
+}
+function offsetPolyline(lls, meters){
+  if(lls.length<2) return lls.slice();
+  const out=[];
+  for(let i=0;i<lls.length;i++){
+    const P = map.latLngToLayerPoint(lls[i]);
+    const A = map.latLngToLayerPoint(lls[Math.max(0,i-1)]);
+    const B = map.latLngToLayerPoint(lls[Math.min(lls.length-1,i+1)]);
+    const dx = B.x - A.x, dy = B.y - A.y;
+    const len = Math.hypot(dx,dy)||1;
+    let nx = -dy/len, ny = dx/len;
+    // pixels to meters scale approximation
+    const A2 = map.layerPointToLatLng(L.point(P.x, P.y));
+    const B2 = map.layerPointToLatLng(L.point(P.x, P.y+100));
+    const metersPer100px = distM(A2,B2);
+    const px = (meters/ metersPer100px)*100;
+    const pxX = P.x + nx * px, pxY = P.y + ny * px;
+    out.push(map.layerPointToLatLng(L.point(pxX,pxY)));
+  }
+  return out;
+}
+function genSerpentine(){
+  const perim = perimPoly.getLatLngs()[0], start = carMarker.getLatLng();
+  const bbox=perim.reduce((b,ll)=>({minX:Math.min(b.minX,ll.lng), maxX:Math.max(b.maxX,ll.lng), minY:Math.min(b.minY,ll.lat), maxY:Math.max(b.maxY,ll.lat)}),{minX:Infinity,maxX:-Infinity,minY:Infinity,maxY:-Infinity});
+  const spacingM=40; const mPerDegLat=111320; const dy=spacingM/mPerDegLat; const startLat=bbox.minY+dy/2, endLat=bbox.maxY-dy/2; const xs=[bbox.minX,bbox.maxX];
+  let lines=[]; let dir=0;
+  for(let y=startLat; y<=endLat; y+=dy){
+    const a=L.latLng(y, xs[dir?1:0]), b=L.latLng(y, xs[dir?0:1]); const samples=60; const seg=[];
+    for(let i=0;i<=samples;i++){ const lng=a.lng+(b.lng-a.lng)*(i/samples); const ll=L.latLng(y,lng); if(insidePolyLL(ll, perim)) seg.push(ll); }
+    if(seg.length>1){ lines.push(seg); dir=1-dir; }
+  }
+  const path=[start]; let cur=start;
+  while(lines.length){
+    let best={idx:0,rev:false,d:Infinity};
+    lines.forEach((seg,idx)=>{ const a=seg[0], b=seg[seg.length-1]; const d1=distM(cur,a), d2=distM(cur,b); if(d1<best.d) best={idx,rev:false,d:d1}; if(d2<best.d) best={idx,rev:true,d:d2}; });
+    const seg=lines.splice(best.idx,1)[0]; const use=best.rev? seg.slice().reverse(): seg; path.push(...use); cur=use[use.length-1];
+  }
+  path.push(start);
+  if(route) route.remove(); route=L.polyline(path,{color:'#8e44ad',weight:5,opacity:0.85}).addTo(map);
+  toast('Serpentine route created');
+}
+function genSidewalk(){
+  // Create serpentine spine then offset A and B
+  const perim = perimPoly.getLatLngs()[0], start = carMarker.getLatLng();
+  // reuse serpentine to get spine
+  const oldRoute=route; genSerpentine(); const spine=route.getLatLngs(); if(oldRoute){ oldRoute.addTo(map); }
+  const left=offsetPolyline(spine, 7); const right=offsetPolyline(spine, -7);
+  const path=[start, ...left, ...right.reverse(), start];
+  if(route) route.remove(); route=L.polyline(path,{color:'#8e44ad',weight:5,opacity:0.9}).addTo(map);
+  toast('One‑side street (geometric) route created');
+}
+async function genStreetBeta(){
+  const perim = perimPoly.getLatLngs()[0]; const carLL = carMarker.getLatLng();
+  const tolM = 25; // allow a little outside boundary
+  // Build Overpass poly string: "lat lon lat lon ..."
+  const polyStr = perim.map(ll=>`${ll.lat} ${ll.lng}`).join(' ');
+  const query = `[out:json][timeout:25];
+    (
+      way
+        ["highway"~"^(residential|unclassified|tertiary|secondary|primary|living_street)$"]
+        (poly:"${polyStr}");
+      way
+        ["highway"="service"]["service"!~"^(driveway|parking_aisle)$"]
+        (poly:"${polyStr}");
+    );
+    (._;>;);
+    out body;`;
+  let data;
+  try{
+    const res = await fetch("https://overpass-api.de/api/interpreter", {method:"POST", body:query, headers:{'Content-Type':'text/plain'}});
+    if(!res.ok) throw new Error('Overpass error');
+    data = await res.json();
+  }catch(e){
+    toast('Street mode unavailable (network). Falling back.'); genSidewalk(); return;
+  }
+  // Build nodes lookup and ways
+  const nodes = new Map(); (data.elements||[]).forEach(el=>{ if(el.type==='node') nodes.set(el.id, L.latLng(el.lat, el.lon)); });
+  const ways = (data.elements||[]).filter(el=>el.type==='way' && el.nodes && el.nodes.length>1).map(w=> w.nodes.map(id=>nodes.get(id)).filter(Boolean));
+  if(!ways.length){ toast('No streets found; falling back.'); genSidewalk(); return; }
+  // Score ways: length inside perimeter & distance to car
+  function lengthInside(seg){
+    let s=0; for(let i=0;i<seg.length-1;i++){ const A=seg[i], B=seg[i+1]; if(!A||!B) continue;
+      const mid=L.latLng((A.lat+B.lat)/2,(A.lng+B.lng)/2); if(insidePolyLL(mid, perim)) s+=distM(A,B);
+    } return s;
+  }
+  function minDistToCar(seg){
+    let best=Infinity; for(let i=0;i<seg.length-1;i++){
+      const A=seg[i], B=seg[i+1];
+      // project
+      const pA=map.latLngToLayerPoint(A), pB=map.latLngToLayerPoint(B), pC=map.latLngToLayerPoint(carLL);
+      const AB={x:pB.x-pA.x,y:pB.y-pA.y}, AC={x:pC.x-pA.x,y:pC.y-pA.y};
+      const ab2=AB.x*AB.x+AB.y*AB.y; let t=ab2===0?0:(AC.x*AB.x+AC.y*AB.y)/ab2; t=Math.max(0,Math.min(1,t));
+      const proj = map.layerPointToLatLng(L.point(pA.x+t*AB.x, pA.y+t*AB.y));
+      best = Math.min(best, distM(proj, carLL));
+    } return best;
+  }
+  const scored = ways.map(w=>({way:w, len:lengthInside(w), d:minDistToCar(w)})).filter(o=>o.len>30).sort((a,b)=> (a.d-b.d)|| (b.len-a.len));
+  if(!scored.length){ toast('No suitable streets; fallback.'); genSidewalk(); return; }
+  streetCandidates = scored;
+  approveIdx = 0;
+  previewBestStreet();
+}
+function previewBestStreet(){
+  if(previewRoute){ previewRoute.remove(); previewRoute=null; }
+  const {way}=streetCandidates[approveIdx];
+  const perim = perimPoly.getLatLngs()[0]; const start = carMarker.getLatLng();
+  // Find nearest index along way to start
+  let bestIdx=0, bestD=Infinity;
+  for(let i=0;i<way.length;i++){ const d=distM(way[i], start); if(d<bestD){ bestD=d; bestIdx=i; } }
+  // Clip way to inside perim +- tolerance
+  function insideTol(ll){ return insidePolyLL(ll, perim); }
+  let i0=bestIdx, i1=bestIdx;
+  while(i0>0 && insideTol(way[i0-1])) i0--;
+  while(i1<way.length-1 && insideTol(way[i1+1])) i1++;
+  const centerline = way.slice(i0,i1+1);
+  // Build up one side then back other side
+  const left=offsetPolyline(centerline, 7);
+  const right=offsetPolyline(centerline, -7);
+  const path=[start, ...left, ...right.reverse(), start];
+  previewRoute = L.polyline(path, {color:'#ff0077', weight:6, opacity:0.8, dashArray:'8 8'}).addTo(map);
+  document.getElementById('approveBar').style.display='flex';
+}
+document.getElementById('approveRoute').onclick=()=>{
+  if(route) route.remove();
+  route = L.polyline(previewRoute.getLatLngs(), {color:'#8e44ad', weight:6, opacity:0.95}).addTo(map);
+  previewRoute.remove(); previewRoute=null;
+  document.getElementById('approveBar').style.display='none';
+  toast('Street route approved');
+};
+document.getElementById('retryRoute').onclick=()=>{
+  approveIdx = (approveIdx+1) % streetCandidates.length;
+  previewBestStreet();
+};
+document.getElementById('cancelRoute').onclick=()=>{
+  if(previewRoute){ previewRoute.remove(); previewRoute=null; }
+  document.getElementById('approveBar').style.display='none';
+  toast('Canceled');
+};
+</script>
+</body>
+</html>
