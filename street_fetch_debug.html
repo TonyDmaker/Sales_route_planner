@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Street Fetch Debug</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html,body{height:100%;margin:0}
+  #map{position:absolute;inset:0}
+  .panel{position:absolute;top:10px;left:10px;background:#fff;border-radius:8px;padding:8px;z-index:1000;font-family:system-ui}
+  .btn{padding:6px 10px;border:1px solid #ddd;border-radius:8px;background:#f3f3f3;margin-right:6px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <button id="btnDraw" class="btn">Draw perimeter</button>
+  <button id="btnFetch" class="btn">Fetch streets</button>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map=L.map('map'); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+map.setView([37.773972,-122.431297],13); if(navigator.geolocation){ map.locate({setView:true,maxZoom:18}); }
+let perim=null, drawing=false; let pts=[]; let tmp=null;
+document.getElementById('btnDraw').onclick=()=>{ drawing=true; pts=[]; if(tmp) tmp.remove(); if(perim) perim.remove(); };
+map.on('click',e=>{ if(!drawing) return; pts.push(e.latlng); if(tmp) tmp.setLatLngs(pts); else tmp=L.polyline(pts,{color:'#ff7a00'}).addTo(map); });
+map.on('contextmenu',()=>{ if(!drawing) return; drawing=false; if(tmp){ tmp.remove(); tmp=null; } if(perim) perim.remove(); perim=L.polygon(pts,{color:'#2563eb',fill:false}).addTo(map); });
+async function fetchStreets(){
+  if(!perim){ alert('Draw perimeter first (click to add points, long-press or right-click to finish)'); return; }
+  const bbox=perim.getBounds(); const sw=bbox.getSouthWest(), ne=bbox.getNorthEast();
+  const query=`[out:json][timeout:25];
+  (way["highway"]["highway"!~"footway|path|cycleway|steps|track|corridor|bridleway|construction|service"]["service"!~"parking_aisle|driveway"](${sw.lat},${sw.lng},${ne.lat},${ne.lng}););
+  out geom;`;
+  try{
+    const res=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:query});
+    const js=await res.json();
+    js.elements.filter(el=>el.type==='way').forEach(w=>{
+      const latlngs=w.geometry.map(g=>L.latLng(g.lat,g.lon));
+      L.polyline(latlngs,{color:'#8e44ad',weight:3,opacity:0.7}).addTo(map);
+    });
+    alert(`Fetched ${js.elements.filter(e=>e.type==='way').length} ways`);
+  }catch(err){ console.error(err); alert('Fetch failed'); }
+}
+document.getElementById('btnFetch').onclick=fetchStreets;
+</script>
+</body>
+</html>

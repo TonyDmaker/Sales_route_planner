@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SRP — v3 draw overlay (safe)</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html,body{height:100%;margin:0}
+  #app{position:relative;height:100vh;width:100vw;overflow:hidden}
+  #map{position:absolute;inset:0}
+  .panel{position:absolute;z-index:1000;background:#fff;opacity:.98;border-radius:12px;padding:12px;font-family:system-ui,Segoe UI,Roboto,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.15);user-select:none;-webkit-user-select:none}
+  .legend{top:10px;left:10px}
+  .fab{position:absolute;top:10px;right:10px;z-index:1100;width:44px;height:44px;border-radius:50%;border:none;background:#111;color:#fff;font-size:22px;box-shadow:0 3px 10px rgba(0,0,0,.25);}
+  .toolbar{top:60px;right:10px;width:320px;max-width:92vw;display:none;max-height:70vh;overflow:auto}
+  .toolbar.show{display:block}
+  .btn{padding:6px 10px;border:1px solid #ddd;border-radius:8px;background:#f6f6f6;margin:2px 4px 2px 0}
+  .palette{position:absolute;z-index:1100;display:none;background:#fff;border-radius:20px;padding:10px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+  .opt{width:40px;height:40px;border-radius:50%;border:2px solid #fff;display:inline-flex;align-items:center;justify-content:center;margin:6px;box-shadow:0 0 4px rgba(0,0,0,.2)}
+  #drawCanvas{position:absolute;inset:0;z-index:1050;display:none}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <canvas id="drawCanvas"></canvas>
+
+  <button id="menuBtn" class="fab">☰</button>
+
+  <div class="panel legend">
+    <div style="font-weight:700;margin-bottom:6px">Legend</div>
+    <div>● Not visited</div>
+    <div style="color:#3498db">● Visited</div>
+    <div style="color:#f1c40f">● Follow‑up</div>
+    <div style="color:#2ecc71">● Wants to buy</div>
+    <div style="color:#e74c3c">● No soliciting</div>
+    <div>🚗 Parking (start/end)</div>
+  </div>
+
+  <div id="settings" class="panel toolbar">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b>Settings</b><button id="closeSettings" class="btn">Close</button>
+    </div>
+    <div style="margin-top:6px"><b>Pins</b></div>
+    <div><button id="clearPins" class="btn">Clear pins</button></div>
+    <div style="margin-top:6px"><b>Parking & Area</b></div>
+    <div>
+      <button id="setParking" class="btn">Set Parking (tap map)</button>
+      <button id="drawPerimeter" class="btn">Draw perimeter</button>
+      <button id="clearPerimeter" class="btn">Clear perimeter</button>
+    </div>
+  </div>
+
+  <div id="palette" class="palette"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map=L.map('map'); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+map.setView([37.773972,-122.431297],13); if(navigator.geolocation){ map.locate({setView:true,maxZoom:18}); }
+window.addEventListener('load',()=>setTimeout(()=>map.invalidateSize(),100));
+
+const menuBtn=document.getElementById('menuBtn'), settings=document.getElementById('settings');
+menuBtn.onclick=()=>settings.classList.toggle('show');
+document.getElementById('closeSettings').onclick=()=>settings.classList.remove('show');
+document.addEventListener('pointerdown',e=>{ if(!(e.target.closest('.toolbar')||e.target.closest('.fab')||e.target.closest('.leaflet-control'))) settings.classList.remove('show'); },{passive:true});
+
+// Pins + palette (tap to choose)
+const COLOR=['#000000','#3498db','#f1c40f','#2ecc71','#e74c3c'];
+const palette=document.getElementById('palette'); let pressLL=null, longTimer=null;
+function showPalette(pt){ palette.style.left=(pt.x-110)+'px'; palette.style.top=(pt.y-80)+'px'; palette.innerHTML=COLOR.map(c=>`<div class="opt" data-c="${c}" style="background:${c}"></div>`).join('')+`<div class="opt" data-car="1">🚗</div>`; palette.style.display='block'; }
+function hidePalette(){ palette.style.display='none'; }
+const pins=[]; function dot(c){ return L.divIcon({className:'',html:`<div style="width:18px;height:18px;border-radius:50%;background:${c};border:2px solid #fff;box-shadow:0 0 3px rgba(0,0,0,.5)"></div>`,iconSize:[18,18],iconAnchor:[9,9]}); }
+function addPin(latlng,c){ L.marker(latlng,{icon:dot(c)}).addTo(map); }
+let carMarker=null; function setCar(ll){ if(carMarker) carMarker.remove(); carMarker=L.marker(ll,{icon:L.divIcon({className:'',html:'<div style="font-size:26px">🚗</div>',iconSize:[26,26],iconAnchor:[13,13]})}).addTo(map); bindCarDrag(); }
+function bindCarDrag(){ if(!carMarker) return; const icon=carMarker._icon; let t=null, dragging=false, pid=null; const offset={x:-16,y:-24}; function up(e){clearTimeout(t); if(dragging){ const pt=map.mouseEventToContainerPoint(e); const pinPt={x:pt.x+offset.x,y:pt.y+offset.y}; setCar(map.containerPointToLatLng(pinPt)); } dragging=false; map.dragging.enable(); map.touchZoom.enable(); }
+icon.addEventListener('pointerdown',e=>{e.preventDefault(); clearTimeout(t); t=setTimeout(()=>{dragging=true; pid=e.pointerId; map.dragging.disable(); map.touchZoom.disable();},700);},{passive:false});
+icon.addEventListener('pointermove',e=>{if(!dragging||e.pointerId!==pid) return; e.preventDefault(); const pt=map.mouseEventToContainerPoint(e); const pinPt={x:pt.x+offset.x,y:pt.y+offset.y}; carMarker.setLatLng(map.containerPointToLatLng(pinPt));},{passive:false});
+icon.addEventListener('pointerup',up,{passive:false}); icon.addEventListener('pointercancel',up,{passive:false}); }
+
+const mapEl=map.getContainer();
+mapEl.addEventListener('pointerdown',e=>{
+  if(e.target.closest('.leaflet-marker-icon')) return;
+  const pt=map.mouseEventToContainerPoint(e); pressLL=map.containerPointToLatLng(pt); clearTimeout(longTimer);
+  longTimer=setTimeout(()=>showPalette(pt),1000);
+},{passive:false});
+mapEl.addEventListener('pointermove',e=>{ if(!longTimer) return; const pt=map.mouseEventToContainerPoint(e); const dx=Math.hypot(pt.x-map.latLngToContainerPoint(pressLL).x, pt.y-map.latLngToContainerPoint(pressLL).y); if(dx>8){ clearTimeout(longTimer); longTimer=null; } },{passive:false});
+document.addEventListener('pointerup',e=>{
+  if(longTimer){ clearTimeout(longTimer); longTimer=null; }
+},{passive:false});
+palette.addEventListener('click',e=>{
+  const opt=e.target.closest('.opt'); if(!opt) return;
+  if(opt.dataset.car){ setCar(pressLL); } else { addPin(pressLL, opt.dataset.c); }
+  hidePalette();
+});
+
+document.getElementById('clearPins').onclick=()=>{ pins.length=0; // markers already not tracked; this just keeps UI simple
+  location.reload(); // simple reset for safe build
+};
+
+// Draw perimeter on canvas overlay
+const cvs=document.getElementById('drawCanvas'); const ctx=cvs.getContext('2d'); let drawing=false, pts=[]; let perimLayer=null;
+function sizeCanvas(){ const r=cvs.getBoundingClientRect(); cvs.width=r.width*devicePixelRatio; cvs.height=r.height*devicePixelRatio; ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); }
+function startDraw(){ sizeCanvas(); cvs.style.display='block'; drawing=true; pts=[]; ctx.clearRect(0,0,cvs.width, cvs.height); }
+function finishDraw(){ drawing=false; cvs.style.display='none'; if(pts.length<3) return; if(perimLayer) perimLayer.remove(); const latlngs=pts.map(p=>map.containerPointToLatLng(L.point(p.x,p.y))); perimLayer=L.polygon(latlngs,{color:'#2563eb',weight:3,fill:true,fillOpacity:0.08}).addTo(map); }
+function drawLine(){ ctx.clearRect(0,0,cvs.width,cvs.height); if(pts.length<2) return; ctx.strokeStyle='#ff7a00'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y); for(const p of pts.slice(1)){ ctx.lineTo(p.x,p.y);} ctx.stroke(); }
+document.getElementById('drawPerimeter').onclick=()=>{ settings.classList.remove('show'); startDraw(); };
+document.getElementById('clearPerimeter').onclick=()=>{ if(perimLayer) { perimLayer.remove(); perimLayer=null;} };
+cvs.addEventListener('pointerdown',e=>{ if(!drawing) return; e.preventDefault(); pts=[{x:e.offsetX,y:e.offsetY}]; drawLine(); },{passive:false});
+cvs.addEventListener('pointermove',e=>{ if(!drawing) return; e.preventDefault(); pts.push({x:e.offsetX,y:e.offsetY}); drawLine(); },{passive:false});
+cvs.addEventListener('pointerup',e=>{ if(drawing){ e.preventDefault(); finishDraw(); } },{passive:false});
+cvs.addEventListener('pointercancel',e=>{ if(drawing){ finishDraw(); } },{passive:false});
+
+// Set parking by tap
+document.getElementById('setParking').onclick=()=>{ settings.classList.remove('show'); const once=(e)=>{ setCar(e.latlng); map.off('click',once); }; map.once('click',once); };
+</script>
+</body>
+</html>
