@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sales Route Planner — v3 + Perimeter Overlay</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  html, body { height:100%; margin:0; }
+  #app { position:relative; height:100vh; width:100vw; overflow:hidden; }
+  #map { position:absolute; inset:0; height:100%; width:100%; }
+  .panel { position:absolute; z-index:1000; background:rgba(255,255,255,0.98); border-radius:12px; padding:12px;
+           font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; box-shadow:0 2px 10px rgba(0,0,0,0.15); font-size:14px; user-select:none; }
+  .legend { top:10px; left:10px; }
+  .toolbar { top:60px; right:10px; width:320px; max-width:92vw; max-height:70vh; overflow:auto; display:none; }
+  .toolbar.show { display:block; }
+  .row { display:flex; align-items:center; gap:6px; margin:4px 0; flex-wrap:wrap; }
+  .btn { display:inline-block; padding:6px 10px; margin:2px 4px 2px 0; border:1px solid #ddd; border-radius:8px; background:#f7f7f7; cursor:pointer; user-select:none; }
+  .marker-dot { width:18px; height:18px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 3px rgba(0,0,0,0.5); }
+  .car-emoji { font-size:26px; line-height:26px; transform:translate(-2px,-2px); }
+  .fab { position:absolute; top:10px; right:10px; z-index:1103; width:44px; height:44px; border-radius:50%; border:none; background:#111; color:#fff; font-size:22px; line-height:44px; text-align:center; box-shadow:0 3px 10px rgba(0,0,0,0.3); cursor:pointer; }
+  .palette { position:absolute; z-index:1102; background:#fff; border-radius:12px; padding:8px; display:none; box-shadow:0 4px 12px rgba(0,0,0,0.25); border:1px solid #0001; }
+  .palette .opt { width:36px; height:36px; border-radius:50%; border:2px solid #fff; display:inline-block; margin:6px; }
+  /* Fullscreen drawing canvas overlay */
+  #drawCanvas { position:fixed; inset:0; z-index:1101; display:none; touch-action:none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <canvas id="drawCanvas"></canvas>
+
+  <button id="menuBtn" class="fab" title="Settings">☰</button>
+
+  <div class="panel legend" id="legendPanel">
+    <div style="font-weight:700;margin-bottom:6px;">Legend</div>
+    <div class="row"><div class="marker-dot" style="background:#000000;"></div> Not visited</div>
+    <div class="row"><div class="marker-dot" style="background:#3498db;"></div> Visited</div>
+    <div class="row"><div class="marker-dot" style="background:#f1c40f;"></div> Follow‑up</div>
+    <div class="row"><div class="marker-dot" style="background:#2ecc71;"></div> Wants to buy</div>
+    <div class="row"><div class="marker-dot" style="background:#e74c3c;"></div> No soliciting</div>
+    <div class="row"><span class="car-emoji">🚗</span> Parking</div>
+  </div>
+
+  <div class="panel toolbar" id="settingsPanel">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:700;">Settings</div>
+      <button class="btn" id="closeSettings">Close</button>
+    </div>
+    <div style="margin-top:6px;font-weight:700;">Pins</div>
+    <div class="row">
+      <button class="btn" id="clearPins">Clear pins</button>
+    </div>
+    <div style="margin-top:6px;font-weight:700;">Parking</div>
+    <div class="row">
+      <button class="btn" id="setParking">Set Parking (tap map)</button>
+    </div>
+    <div style="margin-top:6px;font-weight:700;">Perimeter</div>
+    <div class="row">
+      <button class="btn" id="drawPerimeter">Draw perimeter</button>
+      <button class="btn" id="clearPerimeter">Clear perimeter</button>
+    </div>
+  </div>
+
+  <div id="palette" class="palette"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const COLOR = { NOT:'#000000', BLUE:'#3498db', YELLOW:'#f1c40f', GREEN:'#2ecc71', RED:'#e74c3c' };
+const PALETTE=[COLOR.NOT,COLOR.BLUE,COLOR.YELLOW,COLOR.GREEN,COLOR.RED];
+
+const map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+map.setView([37.773972,-122.431297], 13);
+if(navigator.geolocation) map.locate({setView:true,maxZoom:18});
+window.addEventListener('load',()=>setTimeout(()=>map.invalidateSize(),100));
+
+const menuBtn=document.getElementById('menuBtn');
+const settings=document.getElementById('settingsPanel');
+menuBtn.addEventListener('click', ()=>settings.classList.toggle('show'));
+document.getElementById('closeSettings').addEventListener('click', ()=>settings.classList.remove('show'));
+document.addEventListener('pointerdown', (e)=>{
+  const t=e.target;
+  if(!(t.closest('.toolbar')||t.closest('.fab')||t.closest('.leaflet-control'))) settings.classList.remove('show');
+},{passive:true});
+
+const pins=new Map();
+function newId(){ return 'p_'+Date.now()+'_'+Math.floor(Math.random()*1e6); }
+function dot(color){ return L.divIcon({className:'',html:`<div class="marker-dot" style="background:${color}"></div>`,iconSize:[18,18],iconAnchor:[9,9]}); }
+function addPinAtLL(latlng,color){ const p={id:newId(),lat:latlng.lat,lng:latlng.lng,color}; const m=L.marker(latlng,{icon:dot(color)}).addTo(map); p._m=m; pins.set(p.id,p); }
+
+let carMarker=null, perimPoly=null;
+function carIcon(){ return L.divIcon({className:'',html:`<div class="car-emoji">🚗</div>`,iconSize:[26,26],iconAnchor:[13,13]}); }
+function placeCar(latlng){ if(carMarker) carMarker.remove(); carMarker=L.marker(latlng,{icon:carIcon(),interactive:true}).addTo(map); bindCarDrag(); }
+function bindCarDrag(){
+  if(!carMarker) return;
+  const icon=carMarker._icon; if(!icon) return;
+  let timer=null, dragging=false, pid=null;
+  const offset={x:-16,y:-24};
+  function down(e){ if(e.pointerType==='touch'&&e.isPrimary===false) return; e.preventDefault(); clearTimeout(timer); timer=setTimeout(()=>{dragging=true; pid=e.pointerId; map.dragging.disable();},700); }
+  function move(e){ if(!dragging||e.pointerId!==pid) return; e.preventDefault(); const pt=map.mouseEventToContainerPoint(e); const pinPt={x:pt.x+offset.x,y:pt.y+offset.y}; const ll=map.containerPointToLatLng(pinPt); carMarker.setLatLng(ll); }
+  function up(e){ clearTimeout(timer); if(dragging&&e.pointerId===pid){ e.preventDefault(); const pt=map.mouseEventToContainerPoint(e); const pinPt={x:pt.x+offset.x,y:pt.y+offset.y}; const ll=map.containerPointToLatLng(pinPt); placeCar(ll);} dragging=false; pid=null; map.dragging.enable(); }
+  icon.addEventListener('pointerdown',down,{passive:false}); icon.addEventListener('pointermove',move,{passive:false}); icon.addEventListener('pointerup',up,{passive:false}); icon.addEventListener('pointercancel',up,{passive:false});
+}
+
+const palette=document.getElementById('palette');
+let pressPt=null,pressLL=null,longTimer=null;
+function buildPalette(){ palette.innerHTML=PALETTE.map(c=>`<button class="opt" data-color="${c}" style="background:${c}"></button>`).join('')+`<button class="opt" data-car="1">🚗</button>`; }
+function showPalette(pt){ buildPalette(); palette.style.left=(pt.x-110)+'px'; palette.style.top=(pt.y-80)+'px'; palette.style.display='block'; }
+function hidePalette(){ palette.style.display='none'; }
+const mapEl=map.getContainer();
+mapEl.addEventListener('pointerdown',(e)=>{
+  if(e.target.closest('.leaflet-marker-icon')) return;
+  if(e.pointerType==='touch' && e.isPrimary===false) return;
+  pressPt=map.mouseEventToContainerPoint(e); pressLL=map.containerPointToLatLng(pressPt);
+  clearTimeout(longTimer); longTimer=setTimeout(()=>{ showPalette(pressPt); },1000);
+},{passive:false});
+mapEl.addEventListener('pointermove',(e)=>{
+  if(!longTimer) return; const pt=map.mouseEventToContainerPoint(e);
+  if(Math.hypot(pt.x-pressPt.x,pt.y-pressPt.y)>8){ clearTimeout(longTimer); longTimer=null; }
+},{passive:false});
+mapEl.addEventListener('pointerup',()=>{ if(longTimer){ clearTimeout(longTimer); longTimer=null; } },{passive:true});
+palette.addEventListener('click',(e)=>{
+  const btn=e.target.closest('.opt'); if(!btn) return;
+  if(btn.dataset.car){ placeCar(pressLL); } else { addPinAtLL(pressLL, btn.dataset.color); }
+  hidePalette();
+});
+document.getElementById('clearPins').addEventListener('click',()=>{ pins.forEach(p=>p._m.remove()); pins.clear(); settings.classList.remove('show'); });
+document.getElementById('setParking').addEventListener('click',()=>{ settings.classList.remove('show'); map.once('click',e=>placeCar(e.latlng)); });
+
+// ===== Perimeter drawing via full-screen canvas overlay =====
+const cvs = document.getElementById('drawCanvas');
+const ctx = cvs.getContext('2d');
+function sizeCanvas(){
+  const dpr = window.devicePixelRatio || 1;
+  const w = window.innerWidth, h = window.innerHeight;
+  cvs.style.width = w + 'px'; cvs.style.height = h + 'px';
+  cvs.width = Math.floor(w * dpr); cvs.height = Math.floor(h * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.lineCap='round'; ctx.lineJoin='round';
+}
+sizeCanvas(); window.addEventListener('resize', sizeCanvas);
+
+let drawing=false, path=[];
+function startOverlayDraw(){
+  settings.classList.remove('show');
+  sizeCanvas();
+  path=[]; drawing=true;
+  cvs.style.display='block';
+  ctx.clearRect(0,0,cvs.width,cvs.height);
+  ctx.strokeStyle='#f59e0b'; ctx.lineWidth=4; // orange
+}
+function endOverlayDraw(){
+  drawing=false;
+  cvs.style.display='none';
+  if(path.length>2){
+    // convert screen points to map latlngs
+    const latlngs = path.map(p=>{
+      const pt = L.point(p.x, p.y); // relative to viewport
+      // translate to map container point by subtracting map container's top-left
+      const rect = map.getContainer().getBoundingClientRect();
+      const containerPt = L.point(pt.x - rect.left, pt.y - rect.top);
+      return map.containerPointToLatLng(containerPt);
+    });
+    if(perimPoly) perimPoly.remove();
+    perimPoly = L.polygon(latlngs, {color:'#2563eb',weight:3,opacity:0.9,fill:true,fillOpacity:0.08}).addTo(map);
+  }
+}
+cvs.addEventListener('pointerdown', (e)=>{
+  if(!drawing) return;
+  path=[];
+  path.push({x:e.clientX,y:e.clientY});
+});
+cvs.addEventListener('pointermove', (e)=>{
+  if(!drawing) return;
+  path.push({x:e.clientX,y:e.clientY});
+  const n=path.length;
+  ctx.beginPath();
+  if(n===1){ ctx.moveTo(path[0].x, path[0].y); ctx.lineTo(path[0].x+0.1, path[0].y+0.1); }
+  else { ctx.moveTo(path[n-2].x, path[n-2].y); ctx.lineTo(path[n-1].x, path[n-1].y); }
+  ctx.stroke();
+});
+cvs.addEventListener('pointerup', (e)=>{ if(drawing) endOverlayDraw(); });
+cvs.addEventListener('pointercancel', (e)=>{ if(drawing) endOverlayDraw(); });
+
+document.getElementById('drawPerimeter').addEventListener('click', ()=>{ startOverlayDraw(); });
+document.getElementById('clearPerimeter').addEventListener('click', ()=>{ if(perimPoly){ perimPoly.remove(); perimPoly=null; } settings.classList.remove('show'); });
+</script>
+</body>
+</html>
