@@ -55,6 +55,8 @@
 
   /* Drawing overlay canvas */
   #drawCanvas { position:absolute; inset:0; z-index:1101; display:none; }
+  /* Prevent the browser from stealing touch gestures while drawing */
+  #drawCanvas { touch-action: none; }
 
   /* Street preview footer */
   #streetFooter { position:absolute; left:10px; right:10px; bottom:10px; z-index:1100; display:none; }
@@ -194,53 +196,117 @@ palette.addEventListener('click', (e)=>{
   if(type==='car'){ placeCar(pressLL); } else { const color=opt.getAttribute('data-color'); addPinAt(pressLL, color); }
 });
 
-// ====== Draw perimeter (overlay canvas) ======
+// ====== Draw perimeter (overlay canvas) — mouse & touch safe ======
 const canvas = document.getElementById('drawCanvas');
 const ctx = canvas.getContext('2d');
-let drawing=false, perimPts=[], perimPoly=null;
+let drawing = false, perimPts = [], perimPoly = null;
+
+/* Always size relative to the map, not the canvas itself */
 function sizeCanvas(){
-  // Measure the MAP, not the (hidden) canvas
-  const mapEl = document.getElementById('map');
-  const r = mapEl.getBoundingClientRect();
-
-  // Position the canvas exactly over the map
-  canvas.style.left = r.left + 'px';
-  canvas.style.top  = r.top  + 'px';
-  canvas.style.width  = r.width + 'px';
-  canvas.style.height = r.height + 'px';
-
-  // Set internal bitmap size at device pixel ratio
-  canvas.width  = Math.max(1, Math.round(r.width  * devicePixelRatio));
-  canvas.height = Math.max(1, Math.round(r.height * devicePixelRatio));
-
-  // Reset transform so drawing uses CSS pixels
+  const mapRect = document.getElementById('map').getBoundingClientRect();
+  canvas.style.left = mapRect.left + 'px';
+  canvas.style.top  = mapRect.top  + 'px';
+  canvas.width  = mapRect.width  * devicePixelRatio;
+  canvas.height = mapRect.height * devicePixelRatio;
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
-function redrawCanvas(){ ctx.clearRect(0,0,canvas.width,canvas.height); if(!drawing||perimPts.length<2) return; ctx.lineWidth=3; ctx.strokeStyle='#f97316'; ctx.beginPath(); ctx.moveTo(perimPts[0].x, perimPts[0].y); for(let i=1;i<perimPts.length;i++){ ctx.lineTo(perimPts[i].x, perimPts[i].y); } ctx.stroke(); }
+
+function ptFromEvent(e){
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function redrawCanvas(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (!drawing || perimPts.length < 2) return;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#f97316';
+  ctx.beginPath();
+  ctx.moveTo(perimPts[0].x, perimPts[0].y);
+  for (let i = 1; i < perimPts.length; i++) ctx.lineTo(perimPts[i].x, perimPts[i].y);
+  ctx.stroke();
+}
+
 function startDraw(){
-  // Show first, then measure
+  sizeCanvas();
   canvas.style.display = 'block';
+  perimPts = [];
+  drawing = false; // becomes true on pointerdown
   document.getElementById('drawHint').style.display = 'block';
 
-  sizeCanvas();                  // now returns the correct size
-  perimPts = [];
-  drawing = true;
-
-  // lock map gestures while drawing
+  // lock the map so we don’t pan/zoom while drawing
   map.dragging.disable();
   map.touchZoom.disable();
+  map.doubleClickZoom.disable();
+  map.boxZoom.disable();
+  map.keyboard.disable();
 }
-function endDraw(){ drawing=false; document.getElementById('drawHint').style.display='none'; canvas.style.display='none'; map.dragging.enable(); map.touchZoom.enable();
-  if(perimPts.length>2){ const latlngs = perimPts.map(p=> map.containerPointToLatLng([p.x,p.y])); if(perimPoly) perimPoly.remove(); perimPoly=L.polygon(latlngs,{color:'#2563eb',weight:3,opacity:0.9,fill:true,fillOpacity:0.08}).addTo(map); }
+
+/* Build the Leaflet polygon from the on-screen path */
+function finalizePerimeter(){
+  if (perimPts.length > 2) {
+    const latlngs = perimPts.map(p => map.containerPointToLatLng([p.x, p.y]));
+    if (perimPoly) perimPoly.remove();
+    perimPoly = L.polygon(latlngs, {
+      color:'#2563eb', weight:3, opacity:0.9,
+      fill:true, fillOpacity:0.08
+    }).addTo(map);
+  }
 }
-canvas.addEventListener('pointerdown', (e)=>{ if(!drawing) return; e.preventDefault(); perimPts=[{x:e.offsetX, y:e.offsetY}]; redrawCanvas(); }, {passive:false});
-canvas.addEventListener('pointermove', (e)=>{ if(!drawing) return; e.preventDefault(); perimPts.push({x:e.offsetX,y:e.offsetY}); redrawCanvas(); }, {passive:false});
-canvas.addEventListener('pointerup', (e)=>{ if(drawing) endDraw(); }, {passive:false});
-canvas.addEventListener('pointercancel', (e)=>{ if(drawing) endDraw(); }, {passive:false});
-map.on('move', ()=>{ if(drawing){ sizeCanvas(); redrawCanvas(); }});
-window.addEventListener('resize', ()=>{ if(drawing){ sizeCanvas(); redrawCanvas(); }});
-document.getElementById('drawPerimeterBtn').addEventListener('click', closeMenuAfter(()=> startDraw()));
-document.getElementById('clearPerimeterBtn').addEventListener('click', closeMenuAfter(()=>{ if(perimPoly){ perimPoly.remove(); perimPoly=null; } }));
+
+/* End drawing and restore map interactions */
+function endDraw(){
+  drawing = false;
+  document.getElementById('drawHint').style.display = 'none';
+  canvas.style.display = 'none';
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  finalizePerimeter();
+
+  map.dragging.enable();
+  map.touchZoom.enable();
+  map.doubleClickZoom.enable();
+  map.boxZoom.enable();
+  map.keyboard.enable();
+}
+
+/* Pointer handlers (work for mouse, pen, and touch) */
+canvas.addEventListener('pointerdown', (e) => {
+  // We only draw when armed (canvas is visible)
+  if (canvas.style.display !== 'block') return;
+
+  e.preventDefault();
+  canvas.setPointerCapture(e.pointerId);
+  drawing = true;
+  perimPts = [ ptFromEvent(e) ];
+  redrawCanvas();
+}, { passive:false });
+
+canvas.addEventListener('pointermove', (e) => {
+  if (!drawing) return;
+  e.preventDefault();
+  perimPts.push( ptFromEvent(e) );
+  redrawCanvas();
+}, { passive:false });
+
+function finishPointer(e){
+  if (!drawing) return;
+  e.preventDefault();
+  try { canvas.releasePointerCapture(e.pointerId); } catch {}
+  endDraw();
+}
+canvas.addEventListener('pointerup', finishPointer, { passive:false });
+canvas.addEventListener('pointercancel', finishPointer, { passive:false });
+
+/* Keep canvas sized with the map viewport */
+map.on('move', () => { if (canvas.style.display === 'block') { sizeCanvas(); redrawCanvas(); } });
+window.addEventListener('resize', () => { if (canvas.style.display === 'block') { sizeCanvas(); redrawCanvas(); } });
+
+/* Hook up your buttons */
+document.getElementById('drawPerimeterBtn').addEventListener('click', closeMenuAfter(() => startDraw()));
+document.getElementById('clearPerimeterBtn').addEventListener('click', closeMenuAfter(() => {
+  if (perimPoly){ perimPoly.remove(); perimPoly = null; }
+}));
 
 // ====== Autoroute (offline serpentine/sidewalk) ======
 let route=null, streetPreview=null, streetOffsetLoop=null;
@@ -410,3 +476,4 @@ document.getElementById('autorouteBtn').addEventListener('click', closeMenuAfter
 </script>
 </body>
 </html>
+
