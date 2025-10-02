@@ -201,15 +201,23 @@ const canvas = document.getElementById('drawCanvas');
 const ctx = canvas.getContext('2d');
 let drawing = false, perimPts = [], perimPoly = null;
 
-/* Always size relative to the map, not the canvas itself */
 function sizeCanvas(){
-  const mapRect = document.getElementById('map').getBoundingClientRect();
-  canvas.style.left = mapRect.left + 'px';
-  canvas.style.top  = mapRect.top  + 'px';
-  canvas.width  = mapRect.width  * devicePixelRatio;
-  canvas.height = mapRect.height * devicePixelRatio;
+  // Always size & position the canvas to the MAP container, not to itself
+  const mapEl = map.getContainer();
+  const r = mapEl.getBoundingClientRect();
+
+  // Mirror the map container’s position
+  canvas.style.left = r.left + 'px';
+  canvas.style.top  = r.top  + 'px';
+
+  // Match physical pixel buffer to CSS size (respect DPR)
+  canvas.width  = Math.round(r.width  * devicePixelRatio);
+  canvas.height = Math.round(r.height * devicePixelRatio);
+
+  // Draw using CSS pixel coordinates
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
+
 
 function ptFromEvent(e){
   const r = canvas.getBoundingClientRect();
@@ -244,10 +252,18 @@ function startDraw(){
 
 /* Build the Leaflet polygon from the on-screen path */
 function finalizePerimeter(){
-  if (perimPts.length > 2) {
-    const latlngs = perimPts.map(p => map.containerPointToLatLng([p.x, p.y]));
-    if (perimPoly) perimPoly.remove();
-    perimPoly = L.polygon(latlngs, {
+// Convert canvas pixel coords → map coords with offset correction
+const mapRect    = map.getContainer().getBoundingClientRect();
+const canvasRect = canvas.getBoundingClientRect();
+const dx = canvasRect.left - mapRect.left;
+const dy = canvasRect.top  - mapRect.top;
+
+const latlngs = perimPts.map(p => {
+  const x = p.x - dx;
+  const y = p.y - dy;
+  return map.containerPointToLatLng([x, y]);
+});
+
       color:'#2563eb', weight:3, opacity:0.9,
       fill:true, fillOpacity:0.08
     }).addTo(map);
@@ -476,4 +492,5 @@ document.getElementById('autorouteBtn').addEventListener('click', closeMenuAfter
 </script>
 </body>
 </html>
+
 
