@@ -1,0 +1,1515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Sales Route Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+/* ============ Sales Route Planner — field-instrument UI ============
+   Tokens: warm paper panels, near-black ink, safety-orange actions.
+   Route = indigo · Covered streets = green · Trail = teal             */
+:root{
+  --ink:#1b1d22; --paper:#fdfdfa; --line:#e6e3da; --muted:#6e6a61;
+  --accent:#c2410c; --accent-ink:#fff; --rec:#dc2626;
+  --route:#4338ca; --covered:#16a34a; --trail:#0e7490;
+  --r:14px; --shadow:0 4px 18px rgba(20,18,12,.18);
+  --pad-b:env(safe-area-inset-bottom,0px);
+  --ui:"Barlow Semi Condensed",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --body:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font-family:var(--body);color:var(--ink);-webkit-tap-highlight-color:transparent}
+#app{position:relative;height:100dvh;width:100vw;overflow:hidden;background:#dcd8cf}
+#map{position:absolute;inset:0}
+#map img{-webkit-touch-callout:none}
+.leaflet-container{font-family:var(--body)}
+.leaflet-top.leaflet-right{top:64px}
+.leaflet-bottom.leaflet-left{bottom:calc(78px + var(--pad-b))}
+
+/* shield: full-screen gesture catcher, only while drawing */
+#shield{position:absolute;inset:0;z-index:1101;display:none;touch-action:none;background:transparent}
+#shield.on{display:block}
+
+/* ---- buttons & primitives ---- */
+button{font-family:var(--ui);font-size:15px;color:var(--ink)}
+.btn{padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:#fff;cursor:pointer;font-weight:600;letter-spacing:.01em}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.danger{color:#b91c1c;border-color:#f3c8c8}
+.btn.armed{background:#b91c1c;border-color:#b91c1c;color:#fff}
+.btn:focus-visible,.fab:focus-visible,.pill:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
+.fab{position:absolute;z-index:1103;width:46px;height:46px;border-radius:50%;border:none;background:var(--ink);color:#fff;
+  font-size:21px;line-height:1;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow);cursor:pointer;
+  user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#menuBtn{top:10px;right:10px}
+.stack{position:absolute;right:10px;bottom:calc(14px + var(--pad-b));z-index:1103;display:flex;flex-direction:column;gap:10px;align-items:center}
+.stack .fab{position:static}
+#btnFollow{width:42px;height:42px;background:#fff;color:var(--ink);border:1.5px solid var(--line)}
+#btnFollow.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+#btnTrack{width:58px;height:58px;font-size:22px;background:#fff;color:var(--rec);border:2px solid var(--ink)}
+#btnTrack.rec{background:var(--rec);border-color:var(--rec);color:#fff;animation:pulse 1.6s ease-out infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(220,38,38,.45)}100%{box-shadow:0 0 0 16px rgba(220,38,38,0)}}
+.pill{position:absolute;left:10px;bottom:calc(14px + var(--pad-b));z-index:1103;padding:12px 16px;border:none;border-radius:999px;
+  background:var(--paper);box-shadow:var(--shadow);font-weight:700;font-size:15px;cursor:pointer;letter-spacing:.01em}
+.pill b{color:var(--accent)}
+
+/* ---- HUD chip + day card (signature element) ---- */
+.hud-chip{position:absolute;top:10px;left:10px;z-index:1103;display:flex;align-items:center;gap:9px;padding:10px 14px;border:none;
+  border-radius:999px;background:var(--paper);box-shadow:var(--shadow);font-family:var(--ui);font-weight:700;font-size:16px;cursor:pointer}
+.hud-chip .num{font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.hud-chip .sep{width:1.5px;height:16px;background:var(--line)}
+.dot{width:11px;height:11px;border-radius:50%;background:#9b958a;flex:none}
+.dot.live{background:var(--rec);animation:blink 1.2s ease-in-out infinite}
+@keyframes blink{50%{opacity:.35}}
+.hud-card{position:absolute;top:58px;left:10px;z-index:1102;width:248px;max-width:86vw;background:var(--paper);border-radius:var(--r);
+  box-shadow:var(--shadow);padding:12px 14px;max-height:70vh;overflow:auto}
+.lab{font-family:var(--ui);font-weight:700;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:10px 0 6px}
+.lab:first-child{margin-top:0}
+.lg-row{display:flex;align-items:center;gap:9px;font-size:13.5px;margin:5px 0;color:var(--ink)}
+.lg-dot{width:15px;height:15px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.12),0 1px 3px rgba(0,0,0,.25);flex:none}
+.lg-line{width:22px;height:0;border-top:5px solid;border-radius:3px;flex:none}
+.cnt-row{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:2px}
+.cnt{display:inline-flex;align-items:center;gap:5px;font-family:var(--ui);font-weight:700;font-size:14px;font-variant-numeric:tabular-nums}
+.cnt i{width:11px;height:11px;border-radius:50%;display:inline-block;box-shadow:0 0 0 1px rgba(0,0,0,.15)}
+.tog{display:flex;align-items:center;gap:9px;font-size:14px;margin:7px 0;cursor:pointer}
+.tog input{width:18px;height:18px;accent-color:var(--accent)}
+
+/* ---- slide-in menu ---- */
+.menu{position:absolute;top:0;right:0;bottom:0;z-index:1104;width:330px;max-width:92vw;background:var(--paper);box-shadow:-6px 0 24px rgba(20,18,12,.25);
+  padding:14px 16px calc(20px + var(--pad-b));overflow:auto}
+.menu header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.menu h2{font-family:var(--ui);font-size:19px;font-weight:700;letter-spacing:.02em;margin:0;text-transform:uppercase}
+.x{width:36px;height:36px;border:none;background:transparent;font-size:19px;cursor:pointer;border-radius:8px}
+.sec{border-top:1.5px solid var(--line);padding:11px 0 4px;margin-top:8px}
+.rowb{display:flex;flex-wrap:wrap;gap:8px;margin:7px 0}
+.seg{display:flex;border:1.5px solid var(--line);border-radius:10px;overflow:hidden;margin:7px 0}
+.seg-b{flex:1;padding:10px 6px;border:none;background:#fff;font-weight:600;font-size:13.5px;cursor:pointer}
+.seg-b.on{background:var(--ink);color:#fff}
+.note{font-size:13px;color:var(--muted);margin:6px 0;line-height:1.45}
+.warn{font-size:13px;background:#fef3c7;border:1.5px solid #fcd34d;border-radius:10px;padding:9px 10px;margin:7px 0;line-height:1.45}
+.help{margin:6px 0 2px;padding-left:18px;font-size:13.5px;line-height:1.55;color:var(--ink)}
+.help li{margin:7px 0}
+
+/* ---- bottom sheet (pin notes) ---- */
+.sheet{position:absolute;left:8px;right:8px;bottom:calc(8px + var(--pad-b));z-index:1105;background:var(--paper);border-radius:18px;
+  box-shadow:0 -4px 30px rgba(20,18,12,.3);padding:8px 16px 14px;max-height:72vh;overflow:auto}
+.grab{width:42px;height:4.5px;border-radius:3px;background:var(--line);margin:4px auto 8px}
+.sheet header{display:flex;align-items:baseline;gap:10px}
+.sheet h3{font-family:var(--ui);margin:0;font-size:17px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;flex:none}
+.addr{font-size:14px;color:var(--muted);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status-row{display:flex;flex-wrap:wrap;gap:7px;margin:11px 0}
+.status-btn{display:inline-flex;align-items:center;gap:7px;padding:9px 11px;border:1.5px solid var(--line);border-radius:999px;background:#fff;
+  font-weight:600;font-size:13.5px;cursor:pointer}
+.status-btn i{width:13px;height:13px;border-radius:50%;display:inline-block;box-shadow:0 0 0 1px rgba(0,0,0,.15)}
+.status-btn.on{border-color:var(--ink);background:var(--ink);color:#fff}
+#noteText{width:100%;min-height:74px;border:1.5px solid var(--line);border-radius:12px;padding:10px 12px;font:15px/1.45 var(--body);
+  resize:vertical;background:#fff;color:var(--ink)}
+#noteText:focus{outline:2.5px solid var(--accent);border-color:var(--accent)}
+.sheet-actions{display:flex;align-items:center;gap:8px;margin-top:11px}
+.time{margin-left:auto;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+input,textarea{user-select:text;-webkit-user-select:text;-webkit-touch-callout:default}
+
+/* ---- toast · hint · coach ---- */
+.toast{position:absolute;left:50%;top:64px;transform:translateX(-50%);z-index:1200;background:rgba(27,29,34,.92);color:#fff;
+  padding:9px 15px;border-radius:999px;font-size:13.5px;font-weight:500;max-width:86vw;text-align:center;pointer-events:none}
+.hint{position:absolute;left:50%;bottom:calc(86px + var(--pad-b));transform:translateX(-50%);z-index:1200;background:rgba(27,29,34,.92);
+  color:#fff;padding:9px 15px;border-radius:999px;font-size:13.5px;pointer-events:none}
+.coach{position:absolute;left:50%;bottom:calc(86px + var(--pad-b));transform:translateX(-50%);z-index:1106;background:var(--paper);
+  border-radius:14px;box-shadow:var(--shadow);padding:12px 14px;width:300px;max-width:88vw}
+.coach p{margin:0 0 9px;font-size:14px;line-height:1.5}
+
+/* ---- map glyphs ---- */
+.pin-dot{width:20px;height:20px;border-radius:50%;border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}
+.car-ico{font-size:30px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,.4));transform:translate(-2px,-3px)}
+.you-dot{width:15px;height:15px;border-radius:50%;background:var(--trail);border:2.5px solid #fff;box-shadow:0 0 0 2px rgba(14,116,144,.3),0 1px 5px rgba(0,0,0,.4)}
+
+/* ---- long-press palette ---- */
+#paletteBackdrop{position:absolute;inset:0;z-index:1107;background:transparent}
+.palette{position:absolute;z-index:1108;background:var(--paper);border-radius:14px;box-shadow:var(--shadow);padding:6px;width:188px}
+.pal-opt{display:flex;align-items:center;gap:11px;width:100%;padding:10px 11px;border:none;background:transparent;border-radius:10px;
+  font-weight:600;font-size:14.5px;cursor:pointer;text-align:left}
+.pal-opt:active{background:#f1efe9}
+.pal-dot{width:17px;height:17px;border-radius:50%;flex:none;box-shadow:0 0 0 1px rgba(0,0,0,.15);display:inline-flex;align-items:center;justify-content:center}
+.pal-dot.car{background:transparent;box-shadow:none;font-size:17px}
+
+@media (prefers-reduced-motion:reduce){
+  #btnTrack.rec,.dot.live{animation:none}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="shield"></div>
+
+  <button id="hudChip" class="hud-chip" aria-label="Day stats">
+    <span id="hudDot" class="dot"></span>
+    <span id="hudKm" class="num">0.00 km</span>
+    <span class="sep"></span>
+    <span id="hudCov" class="num">—</span>
+  </button>
+
+  <section id="hudCard" class="hud-card" hidden>
+    <div class="lab">Legend</div>
+    <div class="lg-row"><span class="lg-dot" style="background:#111827"></span>Not visited</div>
+    <div class="lg-row"><span class="lg-dot" style="background:#3498db"></span>Visited</div>
+    <div class="lg-row"><span class="lg-dot" style="background:#f1c40f"></span>Follow-up</div>
+    <div class="lg-row"><span class="lg-dot" style="background:#2ecc71"></span>Wants to buy</div>
+    <div class="lg-row"><span class="lg-dot" style="background:#e74c3c"></span>No soliciting</div>
+    <div class="lg-row"><span style="font-size:17px;width:15px;text-align:center;flex:none">🚗</span>Car (start &amp; end)</div>
+    <div class="lg-row"><span class="lg-line" style="border-color:var(--route)"></span>Planned route</div>
+    <div class="lg-row"><span class="lg-line" style="border-color:var(--covered)"></span>Streets walked</div>
+    <div class="lg-row"><span class="lg-line" style="border-color:var(--trail);border-top-style:dashed"></span>My trail</div>
+    <div class="lab">Pins today</div>
+    <div class="cnt-row" id="countsRow"></div>
+    <div class="lab">Layers</div>
+    <label class="tog"><input type="checkbox" id="layRoute"> Planned route</label>
+    <label class="tog"><input type="checkbox" id="layCover"> Streets walked</label>
+    <label class="tog"><input type="checkbox" id="layTrail"> My trail</label>
+  </section>
+
+  <button id="menuBtn" class="fab" aria-label="Menu">≡</button>
+
+  <button id="btnQuickPin" class="pill"><b>⊕</b> Pin here</button>
+  <div class="stack">
+    <button id="btnFollow" class="fab" aria-label="Follow my position">◎</button>
+    <button id="btnTrack" class="fab" aria-label="Start tracking">●</button>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <div id="drawHint" class="hint" hidden>Draw around the area — lift your finger to finish</div>
+
+  <div id="coach" class="coach" hidden>
+    <p><b>Long-press the map</b> to drop a house pin or park the car. Tap <b>≡</b> for the perimeter and route tools.</p>
+    <button id="coachClose" class="btn primary">Got it</button>
+  </div>
+
+  <div id="paletteBackdrop" hidden></div>
+  <div id="palette" class="palette" hidden></div>
+
+  <section id="sheet" class="sheet" hidden>
+    <div class="grab"></div>
+    <header>
+      <h3>House note</h3>
+      <div id="sheetAddr" class="addr">—</div>
+      <button id="sheetClose" class="x" aria-label="Close">✕</button>
+    </header>
+    <div id="statusRow" class="status-row"></div>
+    <textarea id="noteText" placeholder="What happened at this door?"></textarea>
+    <div class="sheet-actions">
+      <button id="pinMove" class="btn">Move pin</button>
+      <button id="pinDelete" class="btn danger">Delete</button>
+      <span id="sheetTime" class="time"></span>
+    </div>
+  </section>
+
+  <aside id="menuPanel" class="menu" hidden>
+    <header><h2>Route Planner</h2><button id="menuClose" class="x" aria-label="Close menu">✕</button></header>
+
+    <div class="sec">
+      <div class="lab">Route</div>
+      <div class="seg">
+        <button id="modeStreets" class="seg-b">Streets · both sides</button>
+        <button id="modeSweep" class="seg-b">Sweep · offline</button>
+      </div>
+      <div class="rowb">
+        <button id="btnRoute" class="btn primary">Generate route</button>
+        <button id="btnClearRoute" class="btn">Clear route</button>
+      </div>
+      <div id="routeStats" class="note">No route yet.</div>
+    </div>
+
+    <div class="sec">
+      <div class="lab">Car &amp; area</div>
+      <div class="rowb">
+        <button id="btnParkGPS" class="btn">Park car at my GPS</button>
+        <button id="btnCenterCar" class="btn">Center on car</button>
+        <button id="btnClearCar" class="btn">Clear car</button>
+      </div>
+      <div class="rowb">
+        <button id="btnDrawPerim" class="btn">Draw perimeter</button>
+        <button id="btnClearPerim" class="btn">Clear perimeter</button>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="lab">Tracking</div>
+      <div id="httpsNote" class="warn" hidden>GPS is blocked because this page isn't on HTTPS. Host the file to track in the field — see Help below.</div>
+      <label class="tog"><input type="checkbox" id="tFollow"> Follow my position on the map</label>
+      <label class="tog"><input type="checkbox" id="tWake"> Keep screen awake while tracking</label>
+      <div class="rowb"><button id="btnClearWalked" class="btn">Clear walked data</button></div>
+    </div>
+
+    <div class="sec">
+      <div class="lab">Data</div>
+      <div class="rowb">
+        <button id="btnCSV" class="btn">Export notes CSV</button>
+        <button id="btnBackup" class="btn">Backup JSON</button>
+        <button id="btnImport" class="btn">Import backup</button>
+      </div>
+      <input type="file" id="fileImport" accept="application/json,.json" hidden>
+      <div class="rowb">
+        <button id="btnClearPins" class="btn">Clear pins</button>
+        <button id="btnReset" class="btn danger">Reset everything</button>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="lab">Help</div>
+      <ul class="help">
+        <li><b>Long-press the map</b> to drop a status pin or park the car. Right-click works on desktop.</li>
+        <li><b>Tap a pin</b> to write notes, change its status, move it, or delete it.</li>
+        <li><b>Draw a perimeter</b> around the neighborhood, then <b>Generate route</b> — it covers both sides of every street and returns to the car.</li>
+        <li>The <b>●</b> button starts tracking: your trail is recorded and streets turn green as you walk them. The chip up top shows distance and coverage.</li>
+        <li>GPS only works over HTTPS. Easiest hosting: drag this file onto <b>app.netlify.com/drop</b> (free) and open the link it gives you on your phone.</li>
+        <li>Everything saves on this device automatically. Use <b>Backup JSON</b> to move a day to another device.</li>
+      </ul>
+    </div>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* =============================================================
+   SALES ROUTE PLANNER — rebuilt v1.0
+   Feature checklist (regression gate — verify after any edit):
+   [ ] long-press map -> palette -> drop status pin / park car
+   [ ] tap pin -> note sheet: status, notes, address, move, delete
+   [ ] car draggable; Park at GPS; Center on car
+   [ ] draw perimeter (shield); clear perimeter; survives reload
+   [ ] Streets route: both sides of every street, back to car
+   [ ] Sweep route: offline fallback
+   [ ] tracking: trail recorded, streets turn green, distance HUD
+   [ ] wake lock + follow mode toggles
+   [ ] CSV export, JSON backup, import (incl. old-version pins)
+   [ ] everything persists in localStorage; reset clears all
+   ============================================================= */
+/* =================================================================
+   SRP ALGO — pure geometry & routing. No DOM, no Leaflet.
+   Exported for Node tests; runs as plain script in the browser.
+   Points are plain {lat, lng}. Distances in meters.
+   ================================================================= */
+const GEO = {
+  R: 6371000,
+  toRad: d => d * Math.PI / 180,
+  dist(a, b) {
+    const dLat = GEO.toRad(b.lat - a.lat), dLng = GEO.toRad(b.lng - a.lng);
+    const s1 = Math.sin(dLat / 2), s2 = Math.sin(dLng / 2);
+    const h = s1 * s1 + Math.cos(GEO.toRad(a.lat)) * Math.cos(GEO.toRad(b.lat)) * s2 * s2;
+    return 2 * GEO.R * Math.asin(Math.sqrt(h));
+  },
+  /* local equirectangular projection (meters) around a reference point */
+  proj(ref) {
+    const kx = 111320 * Math.cos(GEO.toRad(ref.lat)), ky = 110574;
+    return {
+      xy: p => ({ x: (p.lng - ref.lng) * kx, y: (p.lat - ref.lat) * ky }),
+      ll: q => ({ lat: ref.lat + q.y / ky, lng: ref.lng + q.x / kx })
+    };
+  },
+  pointInPoly(p, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i], b = poly[j];
+      const hit = ((a.lat > p.lat) !== (b.lat > p.lat)) &&
+        (p.lng < (b.lng - a.lng) * (p.lat - a.lat) / (b.lat - a.lat) + a.lng);
+      if (hit) inside = !inside;
+    }
+    return inside;
+  },
+  distToSegM(p, a, b, prj) {
+    const P = prj.xy(p), A = prj.xy(a), B = prj.xy(b);
+    const abx = B.x - A.x, aby = B.y - A.y;
+    const ab2 = abx * abx + aby * aby;
+    let t = ab2 === 0 ? 0 : ((P.x - A.x) * abx + (P.y - A.y) * aby) / ab2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(P.x - (A.x + t * abx), P.y - (A.y + t * aby));
+  },
+  bearing(a, b, prj) {
+    const A = prj.xy(a), B = prj.xy(b);
+    return Math.atan2(B.x - A.x, B.y - A.y);
+  }
+};
+
+/* Douglas-Peucker simplification with a meter tolerance */
+function simplifyPath(pts, epsM) {
+  if (!pts || pts.length < 3) return (pts || []).slice();
+  const prj = GEO.proj(pts[0]);
+  const P = pts.map(p => prj.xy(p));
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[pts.length - 1] = true;
+  const segDist = (q, a, b) => {
+    const abx = b.x - a.x, aby = b.y - a.y;
+    const ab2 = abx * abx + aby * aby;
+    let t = ab2 === 0 ? 0 : ((q.x - a.x) * abx + (q.y - a.y) * aby) / ab2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(q.x - (a.x + t * abx), q.y - (a.y + t * aby));
+  };
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [i, j] = stack.pop();
+    let mx = -1, mi = -1;
+    for (let k = i + 1; k < j; k++) {
+      const d = segDist(P[k], P[i], P[j]);
+      if (d > mx) { mx = d; mi = k; }
+    }
+    if (mx > epsM) { keep[mi] = true; stack.push([i, mi], [mi, j]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+function edgeKeyOf(a, b) { return a < b ? a + '_' + b : b + '_' + a; }
+
+/* Build an undirected street graph from Overpass JSON, clipped to the polygon.
+   A way segment is kept if either endpoint or its midpoint lies inside. */
+function buildStreetGraph(osm, poly) {
+  const nodeLL = new Map();
+  for (const el of (osm.elements || [])) {
+    if (el.type === 'node') nodeLL.set(el.id, { lat: el.lat, lng: el.lon });
+  }
+  const edges = [];
+  const seen = new Set();
+  for (const el of (osm.elements || [])) {
+    if (el.type !== 'way' || !el.nodes) continue;
+    for (let i = 0; i < el.nodes.length - 1; i++) {
+      const ia = el.nodes[i], ib = el.nodes[i + 1];
+      if (ia === ib) continue;
+      const a = nodeLL.get(ia), b = nodeLL.get(ib);
+      if (!a || !b) continue;
+      const mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+      if (!(GEO.pointInPoly(a, poly) || GEO.pointInPoly(b, poly) || GEO.pointInPoly(mid, poly))) continue;
+      const key = edgeKeyOf(ia, ib);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({ a: ia, b: ib, key, len: GEO.dist(a, b) });
+    }
+  }
+  const adj = new Map();
+  const add = (n, ei) => { let l = adj.get(n); if (!l) { l = []; adj.set(n, l); } l.push(ei); };
+  edges.forEach((e, i) => { add(e.a, i); add(e.b, i); });
+  return { nodeLL, edges, adj };
+}
+
+function nearestGraphNode(graph, p) {
+  let best = null, bd = Infinity;
+  for (const id of graph.adj.keys()) {
+    const d = GEO.dist(graph.nodeLL.get(id), p);
+    if (d < bd) { bd = d; best = id; }
+  }
+  return best == null ? null : { id: best, distM: bd };
+}
+
+function componentOf(graph, start) {
+  const seen = new Set([start]);
+  const q = [start];
+  while (q.length) {
+    const n = q.pop();
+    for (const ei of (graph.adj.get(n) || [])) {
+      const e = graph.edges[ei];
+      const o = e.a === n ? e.b : e.a;
+      if (!seen.has(o)) { seen.add(o); q.push(o); }
+    }
+  }
+  return seen;
+}
+
+/* Both-sides coverage route:
+   Double every edge (= walk each street once per side). Every node degree
+   becomes even, so an Eulerian circuit exists — found with Hierholzer.
+   Total length is exactly 2 x street length: optimal for the spec, by
+   construction. Edge choice prefers going straight so streets are walked
+   in natural runs; the splice step keeps the circuit valid regardless. */
+function eulerBothSides(graph, startId) {
+  if (!graph.adj.has(startId)) return null;
+  const comp = componentOf(graph, startId);
+  const tokens = graph.edges.map(e => (comp.has(e.a) && comp.has(e.b)) ? 2 : 0);
+  let streetLen = 0, skippedLen = 0;
+  graph.edges.forEach((e, i) => { if (tokens[i]) streetLen += e.len; else skippedLen += e.len; });
+  if (!streetLen) return null;
+
+  const prj = GEO.proj(graph.nodeLL.get(startId));
+  const pick = (n, prevN) => {
+    let best = -1, bestScore = Infinity;
+    for (const ei of (graph.adj.get(n) || [])) {
+      if (tokens[ei] <= 0) continue;
+      const e = graph.edges[ei];
+      const o = e.a === n ? e.b : e.a;
+      let score = 0;
+      if (prevN != null) {
+        if (o === prevN) {
+          score = Math.PI + 1; /* U-turn only when it's the last option (dead ends) */
+        } else {
+          const b1 = GEO.bearing(graph.nodeLL.get(prevN), graph.nodeLL.get(n), prj);
+          const b2 = GEO.bearing(graph.nodeLL.get(n), graph.nodeLL.get(o), prj);
+          let d = Math.abs(b2 - b1);
+          if (d > Math.PI) d = 2 * Math.PI - d;
+          score = d;
+        }
+      }
+      if (score < bestScore) { bestScore = score; best = ei; }
+    }
+    return best;
+  };
+
+  const circuit = [startId];
+  for (;;) {
+    /* find a circuit node that still has unused edge tokens */
+    let at = -1, node = null;
+    for (let i = 0; i < circuit.length; i++) {
+      const n = circuit[i];
+      if ((graph.adj.get(n) || []).some(ei => tokens[ei] > 0)) { at = i; node = n; break; }
+    }
+    if (at === -1) break;
+    /* walk a subtour until stuck — with even degrees that is back at `node` */
+    const sub = [node];
+    let cur = node, prev = at > 0 ? circuit[at - 1] : null;
+    for (;;) {
+      const ei = pick(cur, prev);
+      if (ei === -1) break;
+      tokens[ei]--;
+      const e = graph.edges[ei];
+      const nxt = e.a === cur ? e.b : e.a;
+      sub.push(nxt);
+      prev = cur; cur = nxt;
+    }
+    circuit.splice(at, 1, ...sub);
+  }
+  return { circuit, streetLen, skippedLen };
+}
+
+/* Offline fallback: serpentine sweep over the polygon (ignores streets).
+   Handles concave shapes by splitting each row into separate inside runs. */
+function sweepRoute(perim, start, spacingM = 40) {
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  perim.forEach(p => {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  });
+  const dLat = spacingM / 110574;
+  const midLat = (minLat + maxLat) / 2;
+  const stepLng = 8 / (111320 * Math.cos(GEO.toRad(midLat)));
+  const runs = [];
+  for (let lat = minLat + dLat / 2; lat <= maxLat; lat += dLat) {
+    let run = null;
+    for (let lng = minLng; lng <= maxLng + stepLng / 2; lng += stepLng) {
+      const p = { lat, lng };
+      if (GEO.pointInPoly(p, perim)) {
+        if (!run) run = [p]; else run.push(p);
+      } else if (run) {
+        if (run.length > 1) runs.push(run);
+        run = null;
+      }
+    }
+    if (run && run.length > 1) runs.push(run);
+  }
+  if (!runs.length) return null;
+  const segs = runs.map(r => [r[0], r[r.length - 1]]);
+  const path = [start];
+  let cur = start, len = 0;
+  while (segs.length) {
+    let bi = 0, brev = false, bd = Infinity;
+    segs.forEach((s, i) => {
+      const d0 = GEO.dist(cur, s[0]), d1 = GEO.dist(cur, s[1]);
+      if (d0 < bd) { bd = d0; bi = i; brev = false; }
+      if (d1 < bd) { bd = d1; bi = i; brev = true; }
+    });
+    const s = segs.splice(bi, 1)[0];
+    const use = brev ? [s[1], s[0]] : s;
+    len += GEO.dist(cur, use[0]) + GEO.dist(use[0], use[1]);
+    path.push(use[0], use[1]);
+    cur = use[1];
+  }
+  len += GEO.dist(cur, start);
+  path.push(start);
+  return { path, lenM: len };
+}
+
+function pathLenM(path) {
+  let s = 0;
+  for (let i = 0; i < path.length - 1; i++) s += GEO.dist(path[i], path[i + 1]);
+  return s;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { GEO, simplifyPath, edgeKeyOf, buildStreetGraph, nearestGraphNode, componentOf, eulerBothSides, sweepRoute, pathLenM };
+}
+/* =================================================================
+   CORE — storage, state, map, HUD, shared UI helpers
+   ================================================================= */
+
+/* Persistent store; falls back to memory when localStorage is
+   unavailable (e.g. sandboxed previews) so the app never crashes. */
+const Store = (() => {
+  const mem = new Map();
+  let ok = true;
+  try { localStorage.setItem('__srp_probe', '1'); localStorage.removeItem('__srp_probe'); } catch (e) { ok = false; }
+  return {
+    persistent: ok,
+    get(k, fb) {
+      try {
+        const raw = ok ? localStorage.getItem(k) : (mem.has(k) ? mem.get(k) : null);
+        return raw == null ? fb : JSON.parse(raw);
+      } catch (e) { return fb; }
+    },
+    set(k, v) {
+      const raw = JSON.stringify(v);
+      if (ok) { try { localStorage.setItem(k, raw); return; } catch (e) {} }
+      mem.set(k, raw);
+    },
+    del(k) {
+      if (ok) { try { localStorage.removeItem(k); } catch (e) {} }
+      mem.delete(k);
+    }
+  };
+})();
+const K = p => 'SRP1.' + p;
+
+const STATUSES = [
+  { key: 'not_visited', label: 'Not visited',   color: '#111827' },
+  { key: 'visited',     label: 'Visited',       color: '#3498db' },
+  { key: 'follow_up',   label: 'Follow-up',     color: '#f1c40f' },
+  { key: 'wants',       label: 'Wants to buy',  color: '#2ecc71' },
+  { key: 'no_solicit',  label: 'No soliciting', color: '#e74c3c' }
+];
+const statusByKey = {};
+STATUSES.forEach(s => { statusByKey[s.key] = s; });
+
+const S = {
+  pins: new Map(),
+  car: Store.get(K('car'), null),
+  perim: Store.get(K('perim'), []),
+  route: Store.get(K('route'), null),
+  covered: new Set(Store.get(K('covered'), [])),
+  trail: Store.get(K('trail'), []),
+  stats: Store.get(K('stats'), { distM: 0 }),
+  settings: null,
+  tracking: false
+};
+S.settings = Object.assign(
+  { follow: true, wake: true, mode: 'streets', layers: {} },
+  Store.get(K('settings'), {})
+);
+S.settings.layers = Object.assign({ route: true, covered: true, trail: true }, S.settings.layers || {});
+function saveSettings() { Store.set(K('settings'), S.settings); }
+
+/* ---- DOM helpers ---- */
+const $ = id => document.getElementById(id);
+let toastTimer = null;
+function toast(msg, ms = 1800) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+}
+
+/* Two-tap confirm for destructive buttons */
+function armConfirm(btn, fn) {
+  let armed = false, timer = null;
+  btn.addEventListener('click', () => {
+    if (!armed) {
+      armed = true;
+      btn.dataset.prev = btn.textContent;
+      btn.textContent = 'Tap again to confirm';
+      btn.classList.add('armed');
+      timer = setTimeout(() => {
+        armed = false;
+        btn.textContent = btn.dataset.prev;
+        btn.classList.remove('armed');
+      }, 2600);
+      return;
+    }
+    clearTimeout(timer);
+    armed = false;
+    btn.textContent = btn.dataset.prev;
+    btn.classList.remove('armed');
+    fn();
+  });
+}
+
+/* ---- Map ---- */
+const savedView = Store.get(K('view'), null);
+const map = L.map('map', { zoomControl: false, preferCanvas: true });
+L.control.zoom({ position: 'topright' }).addTo(map);
+L.control.scale({ imperial: true, metric: false, position: 'bottomleft' }).addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+if (savedView) {
+  map.setView([savedView.lat, savedView.lng], savedView.z);
+} else {
+  map.setView([37.5407, -77.4360], 13); /* Richmond, VA default */
+  if (window.isSecureContext && 'geolocation' in navigator) map.locate({ setView: true, maxZoom: 17 });
+}
+map.on('moveend', () => {
+  const c = map.getCenter();
+  Store.set(K('view'), { lat: c.lat, lng: c.lng, z: map.getZoom() });
+});
+const mapEl = map.getContainer();
+
+/* Layer groups — add order sets draw order: route under covered under trail */
+const gRoute = L.layerGroup().addTo(map);
+const gCovered = L.layerGroup().addTo(map);
+const gTrail = L.layerGroup().addTo(map);
+const gPins = L.layerGroup().addTo(map);
+
+function toggleGroup(g, on) {
+  if (on) { if (!map.hasLayer(g)) g.addTo(map); }
+  else { if (map.hasLayer(g)) map.removeLayer(g); }
+}
+function applyLayers() {
+  toggleGroup(gRoute, S.settings.layers.route);
+  toggleGroup(gCovered, S.settings.layers.covered);
+  toggleGroup(gTrail, S.settings.layers.trail);
+}
+
+/* ---- HUD ---- */
+function fmtKm(m) { return (m / 1000).toFixed(m < 9950 ? 2 : 1) + ' km'; }
+function coverage() {
+  if (!S.route || !S.route.edges || !S.route.streetLenM) return null;
+  let cov = 0;
+  for (const e of S.route.edges) if (S.covered.has(e.key)) cov += e.len;
+  return { covM: cov, totalM: S.route.streetLenM, pct: Math.min(100, Math.round(100 * cov / S.route.streetLenM)) };
+}
+function updateHUD() {
+  $('hudKm').textContent = fmtKm(S.stats.distM);
+  const c = coverage();
+  $('hudCov').textContent = c ? c.pct + '%' : '—';
+  $('hudDot').classList.toggle('live', S.tracking);
+  const counts = {};
+  S.pins.forEach(p => { counts[p.status] = (counts[p.status] || 0) + 1; });
+  $('countsRow').innerHTML = STATUSES.map(s =>
+    `<span class="cnt"><i style="background:${s.color}"></i>${counts[s.key] || 0}</span>`
+  ).join('');
+  const st = $('routeStats');
+  if (S.route) {
+    const min = Math.round((S.route.lenM / 1000) / 4 * 60);
+    let txt = '';
+    if (S.route.streetLenM) txt += fmtKm(S.route.streetLenM) + ' of streets · ';
+    txt += 'route ' + fmtKm(S.route.lenM) + ' · ~' + min + ' min walking';
+    if (S.route.skippedLenM > 30) txt += ' · ' + fmtKm(S.route.skippedLenM) + ' unreachable, skipped';
+    st.textContent = txt;
+  } else {
+    st.textContent = 'No route yet.';
+  }
+}
+
+/* ---- Menu & HUD card open/close ---- */
+$('menuBtn').onclick = () => {
+  $('menuPanel').hidden = !$('menuPanel').hidden;
+  $('hudCard').hidden = true;
+};
+$('menuClose').onclick = () => { $('menuPanel').hidden = true; };
+$('hudChip').onclick = () => {
+  $('hudCard').hidden = !$('hudCard').hidden;
+  $('menuPanel').hidden = true;
+};
+document.addEventListener('pointerdown', e => {
+  const t = e.target;
+  if (!t.closest('#menuPanel') && !t.closest('#menuBtn')) $('menuPanel').hidden = true;
+  if (!t.closest('#hudCard') && !t.closest('#hudChip')) $('hudCard').hidden = true;
+}, { passive: true });
+/* =================================================================
+   PINS — house pins + note sheet, car marker, long-press palette
+   ================================================================= */
+
+function dotIcon(color) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="pin-dot" style="background:${color}"></div>`,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10]
+  });
+}
+function newId() { return 'p' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36); }
+function savePins() {
+  Store.set(K('pins'), Array.from(S.pins.values()).map(p => ({
+    id: p.id, lat: p.lat, lng: p.lng, status: p.status,
+    notes: p.notes, address: p.address, created: p.created, updated: p.updated
+  })));
+}
+
+let sheetPin = null;
+let movingPin = null;
+let suppressClickUntil = 0;
+
+function attachPin(p) {
+  const m = L.marker([p.lat, p.lng], { icon: dotIcon(statusByKey[p.status].color), keyboard: false });
+  m.on('click', () => openSheet(p));
+  m.addTo(gPins);
+  p._m = m;
+}
+
+function addPin(ll, statusKey) {
+  const p = {
+    id: newId(), lat: ll.lat, lng: ll.lng,
+    status: statusByKey[statusKey] ? statusKey : 'not_visited',
+    notes: '', address: '', created: Date.now(), updated: Date.now()
+  };
+  attachPin(p);
+  S.pins.set(p.id, p);
+  savePins();
+  updateHUD();
+  fetchAddress(p);
+  openSheet(p);
+  return p;
+}
+
+async function fetchAddress(p) {
+  try {
+    const r = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${p.lat}&lon=${p.lng}&zoom=18`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    if (!r.ok) return;
+    const j = await r.json();
+    const a = j.address || {};
+    const line = [a.house_number, a.road].filter(Boolean).join(' ');
+    p.address = line || ((j.display_name || '').split(',').slice(0, 2).join(',').trim());
+    p.updated = Date.now();
+    savePins();
+    if (sheetPin && sheetPin.id === p.id) $('sheetAddr').textContent = p.address || '—';
+  } catch (e) { /* offline: leave blank, tap address line to retry */ }
+}
+
+/* ---- note sheet ---- */
+function buildStatusRow() {
+  $('statusRow').innerHTML = STATUSES.map(s =>
+    `<button class="status-btn" data-k="${s.key}"><i style="background:${s.color}"></i>${s.label}</button>`
+  ).join('');
+  $('statusRow').querySelectorAll('.status-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      if (!sheetPin) return;
+      sheetPin.status = b.dataset.k;
+      sheetPin.updated = Date.now();
+      sheetPin._m.setIcon(dotIcon(statusByKey[sheetPin.status].color));
+      markStatusRow();
+      savePins();
+      updateHUD();
+    });
+  });
+}
+function markStatusRow() {
+  $('statusRow').querySelectorAll('.status-btn').forEach(b => {
+    b.classList.toggle('on', !!sheetPin && b.dataset.k === sheetPin.status);
+  });
+}
+function openSheet(p) {
+  sheetPin = p;
+  $('sheetAddr').textContent = p.address || '—';
+  $('noteText').value = p.notes || '';
+  $('sheetTime').textContent = new Date(p.created).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  markStatusRow();
+  $('sheet').hidden = false;
+}
+function closeSheet() {
+  $('sheet').hidden = true;
+  sheetPin = null;
+}
+$('sheetClose').onclick = closeSheet;
+$('sheetAddr').onclick = () => {
+  if (sheetPin && !sheetPin.address) {
+    $('sheetAddr').textContent = 'Looking up…';
+    fetchAddress(sheetPin);
+  }
+};
+let noteTimer = null;
+$('noteText').addEventListener('input', () => {
+  if (!sheetPin) return;
+  sheetPin.notes = $('noteText').value;
+  sheetPin.updated = Date.now();
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(savePins, 400);
+});
+armConfirm($('pinDelete'), () => {
+  if (!sheetPin) return;
+  gPins.removeLayer(sheetPin._m);
+  S.pins.delete(sheetPin.id);
+  savePins();
+  updateHUD();
+  closeSheet();
+});
+$('pinMove').onclick = () => {
+  if (!sheetPin) return;
+  movingPin = sheetPin;
+  closeSheet();
+  toast('Tap the map where this pin should go');
+};
+map.on('click', e => {
+  if (Date.now() < suppressClickUntil) return;
+  if (movingPin) {
+    const p = movingPin;
+    movingPin = null;
+    p.lat = e.latlng.lat; p.lng = e.latlng.lng;
+    p.updated = Date.now();
+    p._m.setLatLng(e.latlng);
+    p.address = '';
+    savePins();
+    fetchAddress(p);
+    openSheet(p);
+  }
+});
+
+/* load saved pins */
+Store.get(K('pins'), []).forEach(o => {
+  const p = Object.assign({}, o);
+  if (!statusByKey[p.status]) p.status = 'not_visited';
+  attachPin(p);
+  S.pins.set(p.id, p);
+});
+
+/* ---- car ---- */
+let carMarker = null;
+function carIcon() {
+  return L.divIcon({ className: '', html: '<div class="car-ico">🚗</div>', iconSize: [34, 34], iconAnchor: [17, 17] });
+}
+function setCar(ll) {
+  S.car = { lat: ll.lat, lng: ll.lng };
+  Store.set(K('car'), S.car);
+  if (!carMarker) {
+    carMarker = L.marker(ll, { icon: carIcon(), draggable: true, autoPan: true, zIndexOffset: 800 }).addTo(map);
+    carMarker.on('dragend', () => {
+      const c = carMarker.getLatLng();
+      S.car = { lat: c.lat, lng: c.lng };
+      Store.set(K('car'), S.car);
+      toast('Car moved');
+    });
+  } else {
+    carMarker.setLatLng(ll);
+  }
+}
+function clearCar() {
+  if (carMarker) { map.removeLayer(carMarker); carMarker = null; }
+  S.car = null;
+  Store.del(K('car'));
+}
+if (S.car) setCar(S.car);
+
+/* ---- long-press palette (open on hold, then tap to choose) ---- */
+const paletteEl = $('palette');
+const backdrop = $('paletteBackdrop');
+let pressLL = null;
+
+function buildPalette() {
+  paletteEl.innerHTML = STATUSES.map(s =>
+    `<button class="pal-opt" data-k="${s.key}"><i class="pal-dot" style="background:${s.color}"></i><span>${s.label}</span></button>`
+  ).join('') +
+  `<button class="pal-opt" data-k="__car"><i class="pal-dot car">🚗</i><span>Park car here</span></button>`;
+  paletteEl.querySelectorAll('.pal-opt').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.k;
+      hidePalette();
+      if (k === '__car') { setCar(pressLL); toast('Car parked'); }
+      else addPin(pressLL, k);
+    });
+  });
+}
+function showPalette(x, y, ll) {
+  pressLL = ll;
+  suppressClickUntil = Date.now() + 800;
+  buildPalette();
+  backdrop.hidden = false;
+  paletteEl.hidden = false;
+  const r = paletteEl.getBoundingClientRect();
+  const px = Math.min(Math.max(8, x - r.width / 2), window.innerWidth - r.width - 8);
+  const py = Math.min(Math.max(8, y - r.height - 18), window.innerHeight - r.height - 8);
+  paletteEl.style.left = px + 'px';
+  paletteEl.style.top = py + 'px';
+  if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) {} }
+}
+function hidePalette() {
+  paletteEl.hidden = true;
+  backdrop.hidden = true;
+}
+backdrop.addEventListener('pointerdown', e => { e.preventDefault(); hidePalette(); }, { passive: false });
+
+let lpTimer = null, lpStart = null;
+mapEl.addEventListener('pointerdown', e => {
+  if (e.target.closest('.leaflet-marker-icon')) return;
+  if (e.pointerType === 'touch' && !e.isPrimary) return;
+  lpStart = { x: e.clientX, y: e.clientY };
+  const ll = map.mouseEventToLatLng(e);
+  clearTimeout(lpTimer);
+  lpTimer = setTimeout(() => { lpTimer = null; showPalette(lpStart.x, lpStart.y, ll); }, 550);
+}, { passive: true });
+mapEl.addEventListener('pointermove', e => {
+  if (!lpTimer) return;
+  if (Math.hypot(e.clientX - lpStart.x, e.clientY - lpStart.y) > 12) { clearTimeout(lpTimer); lpTimer = null; }
+}, { passive: true });
+['pointerup', 'pointercancel'].forEach(t => {
+  mapEl.addEventListener(t, () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } }, { passive: true });
+});
+/* desktop: right-click opens the same palette */
+map.on('contextmenu', e => {
+  const rect = mapEl.getBoundingClientRect();
+  showPalette(rect.left + e.containerPoint.x, rect.top + e.containerPoint.y, e.latlng);
+});
+/* =================================================================
+   AREA & ROUTE — perimeter drawing, Overpass streets, route engine
+   ================================================================= */
+
+const shield = $('shield');
+let drawing = false, drawPts = [], drawLine = null, perimPoly = null;
+
+function renderPerim() {
+  if (perimPoly) { map.removeLayer(perimPoly); perimPoly = null; }
+  if (S.perim && S.perim.length > 2) {
+    perimPoly = L.polygon(S.perim, {
+      color: '#1d4ed8', weight: 3, opacity: 0.9,
+      fillColor: '#1d4ed8', fillOpacity: 0.06, interactive: false
+    }).addTo(map);
+  }
+}
+renderPerim();
+
+$('btnDrawPerim').onclick = () => {
+  $('menuPanel').hidden = true;
+  drawing = true;
+  drawPts = [];
+  if (drawLine) { map.removeLayer(drawLine); drawLine = null; }
+  drawLine = L.polyline([], { color: '#1d4ed8', weight: 3, opacity: 0.95, dashArray: '4 6' }).addTo(map);
+  shield.classList.add('on');
+  $('drawHint').hidden = false;
+  map.dragging.disable(); map.touchZoom.disable(); map.doubleClickZoom.disable();
+};
+$('btnClearPerim').onclick = () => {
+  S.perim = [];
+  Store.del(K('perim'));
+  renderPerim();
+  toast('Perimeter cleared');
+};
+
+function shieldLL(e) {
+  const rect = mapEl.getBoundingClientRect();
+  return map.containerPointToLatLng([e.clientX - rect.left, e.clientY - rect.top]);
+}
+shield.addEventListener('pointerdown', e => {
+  if (!drawing) return;
+  e.preventDefault();
+  if (shield.setPointerCapture) { try { shield.setPointerCapture(e.pointerId); } catch (err) {} }
+  drawPts = [shieldLL(e)];
+  drawLine.setLatLngs(drawPts);
+}, { passive: false });
+shield.addEventListener('pointermove', e => {
+  if (!drawing || !drawPts.length) return;
+  e.preventDefault();
+  drawPts.push(shieldLL(e));
+  drawLine.setLatLngs(drawPts);
+}, { passive: false });
+function endDraw() {
+  if (!drawing) return;
+  drawing = false;
+  shield.classList.remove('on');
+  $('drawHint').hidden = true;
+  map.dragging.enable(); map.touchZoom.enable(); map.doubleClickZoom.enable();
+  if (drawLine) { map.removeLayer(drawLine); drawLine = null; }
+  if (drawPts.length > 5) {
+    const simp = simplifyPath(drawPts.map(p => ({ lat: p.lat, lng: p.lng })), 6);
+    S.perim = simp;
+    Store.set(K('perim'), S.perim);
+    renderPerim();
+    toast('Perimeter saved');
+  } else {
+    toast('Too small — tap Draw perimeter and try again');
+  }
+  drawPts = [];
+}
+shield.addEventListener('pointerup', endDraw, { passive: false });
+shield.addEventListener('pointercancel', endDraw, { passive: false });
+
+/* ---- Overpass streets (cached per perimeter, with a mirror) ---- */
+const OVERPASS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter'
+];
+function perimHash() {
+  return S.perim.map(p => p.lat.toFixed(5) + ',' + p.lng.toFixed(5)).join(';');
+}
+async function fetchStreets() {
+  const hash = perimHash();
+  const cache = Store.get(K('osm'), null);
+  if (cache && cache.hash === hash && (Date.now() - cache.ts) < 7 * 24 * 3600 * 1000) return cache.data;
+  const poly = S.perim.map(p => p.lat + ' ' + p.lng).join(' ');
+  const q = '[out:json][timeout:25];' +
+    'way[highway~"^(residential|unclassified|tertiary|secondary|primary|living_street|service)$"]' +
+    '[service!~"^(parking_aisle|driveway|drive-through)$"][area!~"^yes$"]' +
+    '(poly:"' + poly + '");(._;>;);out body;';
+  let lastErr = null;
+  for (const url of OVERPASS) {
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 25000);
+      const r = await fetch(url, {
+        method: 'POST',
+        body: 'data=' + encodeURIComponent(q),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        signal: ctrl.signal
+      });
+      clearTimeout(to);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      Store.set(K('osm'), { hash, ts: Date.now(), data });
+      return data;
+    } catch (e) { lastErr = e; }
+  }
+  if (cache && cache.hash === hash) return cache.data; /* stale beats nothing */
+  throw lastErr || new Error('Street data unavailable');
+}
+
+/* ---- route rendering ---- */
+let routeLine = null;
+const coveredLines = new Map();
+
+function clearRouteLayers() {
+  gRoute.clearLayers();
+  gCovered.clearLayers();
+  coveredLines.clear();
+  routeLine = null;
+}
+function renderRoute() {
+  clearRouteLayers();
+  if (!S.route) { updateHUD(); return; }
+  routeLine = L.polyline(S.route.path, { color: '#4338ca', weight: 5, opacity: 0.85, interactive: false }).addTo(gRoute);
+  if (S.route.edges) {
+    for (const e of S.route.edges) {
+      if (S.covered.has(e.key)) addCoveredLine(e);
+    }
+  }
+  updateHUD();
+}
+function addCoveredLine(e) {
+  if (coveredLines.has(e.key)) return;
+  coveredLines.set(e.key, L.polyline([e.a, e.b], { color: '#16a34a', weight: 7, opacity: 0.85, interactive: false }).addTo(gCovered));
+}
+renderRoute();
+
+/* ---- route generation ---- */
+async function generateRoute() {
+  $('menuPanel').hidden = true;
+  if (!S.car) { toast('Park the car first — long-press the map'); return; }
+  if (!S.perim || S.perim.length < 3) { toast('Draw a perimeter first'); return; }
+  const mode = S.settings.mode;
+
+  if (mode === 'sweep') {
+    const r = sweepRoute(S.perim, { lat: S.car.lat, lng: S.car.lng });
+    if (!r) { toast('Area too small for a sweep'); return; }
+    S.route = { mode, path: r.path, lenM: r.lenM, streetLenM: 0, skippedLenM: 0, edges: null };
+    Store.set(K('route'), S.route);
+    S.covered = new Set(); Store.set(K('covered'), []);
+    renderRoute();
+    if (routeLine) map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+    toast('Sweep route ready');
+    return;
+  }
+
+  toast('Loading streets…', 4000);
+  $('btnRoute').disabled = true;
+  try {
+    const data = await fetchStreets();
+    const graph = buildStreetGraph(data, S.perim);
+    if (!graph.edges.length) { toast('No streets found here — try Sweep mode'); return; }
+    const near = nearestGraphNode(graph, S.car);
+    if (!near) { toast('No streets found here — try Sweep mode'); return; }
+    if (near.distM > 400) toast('Heads up: the car is far from the streets in this area', 2600);
+    const res = eulerBothSides(graph, near.id);
+    if (!res) { toast('Could not build a route in this area'); return; }
+    const carLL = { lat: S.car.lat, lng: S.car.lng };
+    const path = [carLL].concat(res.circuit.map(id => graph.nodeLL.get(id)), [carLL]);
+    const comp = componentOf(graph, near.id);
+    const edges = graph.edges
+      .filter(e => comp.has(e.a) && comp.has(e.b))
+      .map(e => ({ key: e.key, a: graph.nodeLL.get(e.a), b: graph.nodeLL.get(e.b), len: e.len }));
+    S.route = {
+      mode, path,
+      lenM: pathLenM(path),
+      streetLenM: res.streetLen,
+      skippedLenM: res.skippedLen,
+      edges
+    };
+    Store.set(K('route'), S.route);
+    S.covered = new Set(); Store.set(K('covered'), []);
+    renderRoute();
+    if (routeLine) map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+    toast('Route ready — ' + fmtKm(res.streetLen) + ' of streets, both sides', 2600);
+  } catch (e) {
+    toast('Street data unavailable — check connection or try Sweep mode', 3000);
+  } finally {
+    $('btnRoute').disabled = false;
+  }
+}
+$('btnRoute').onclick = generateRoute;
+$('btnClearRoute').onclick = () => {
+  S.route = null;
+  Store.del(K('route'));
+  S.covered = new Set();
+  Store.set(K('covered'), []);
+  renderRoute();
+  toast('Route cleared');
+};
+/* =================================================================
+   TRACKING & DATA — GPS, coverage, trail, wake lock, import/export
+   ================================================================= */
+
+let youMarker = null, youRing = null, lastFix = null, watchId = null, wakeLock = null;
+let trailLine = null;
+
+function youIcon() {
+  return L.divIcon({ className: '', html: '<div class="you-dot"></div>', iconSize: [15, 15], iconAnchor: [8, 8] });
+}
+function updateYou(ll, acc) {
+  if (!youMarker) {
+    youMarker = L.marker(ll, { icon: youIcon(), interactive: false, zIndexOffset: 900 }).addTo(map);
+    youRing = L.circle(ll, { radius: acc || 0, color: '#0e7490', weight: 1, opacity: 0.4, fillOpacity: 0.07, interactive: false }).addTo(map);
+  } else {
+    youMarker.setLatLng(ll);
+    youRing.setLatLng(ll);
+    youRing.setRadius(acc || 0);
+  }
+}
+
+function renderTrail() {
+  gTrail.clearLayers();
+  trailLine = L.polyline(S.trail.map(p => [p.lat, p.lng]), {
+    color: '#0e7490', weight: 3, opacity: 0.7, dashArray: '2 6', interactive: false
+  }).addTo(gTrail);
+}
+renderTrail();
+
+let saveTimer = null;
+function throttledSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    Store.set(K('trail'), S.trail);
+    Store.set(K('covered'), Array.from(S.covered));
+    Store.set(K('stats'), S.stats);
+  }, 4000);
+}
+function flushSave() {
+  Store.set(K('trail'), S.trail);
+  Store.set(K('covered'), Array.from(S.covered));
+  Store.set(K('stats'), S.stats);
+}
+
+/* mark street segments within ~22 m of the fix (or the midpoint to the
+   previous fix) as walked, and paint them green */
+function markCovered(p, prev) {
+  if (!S.route || !S.route.edges) return;
+  const prj = GEO.proj(p);
+  const mid = prev ? { lat: (p.lat + prev.lat) / 2, lng: (p.lng + prev.lng) / 2 } : null;
+  let changed = false;
+  for (const e of S.route.edges) {
+    if (S.covered.has(e.key)) continue;
+    if (!e._bb) {
+      const pad = 0.0005;
+      e._bb = {
+        minLa: Math.min(e.a.lat, e.b.lat) - pad, maxLa: Math.max(e.a.lat, e.b.lat) + pad,
+        minLo: Math.min(e.a.lng, e.b.lng) - pad, maxLo: Math.max(e.a.lng, e.b.lng) + pad
+      };
+    }
+    const inBB = q => q.lat >= e._bb.minLa && q.lat <= e._bb.maxLa && q.lng >= e._bb.minLo && q.lng <= e._bb.maxLo;
+    if (!inBB(p) && !(mid && inBB(mid))) continue;
+    if (GEO.distToSegM(p, e.a, e.b, prj) < 22 || (mid && GEO.distToSegM(mid, e.a, e.b, prj) < 22)) {
+      S.covered.add(e.key);
+      addCoveredLine(e);
+      changed = true;
+    }
+  }
+  if (changed) updateHUD();
+}
+
+function onFix(pos) {
+  const acc = pos.coords.accuracy || 999;
+  const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  updateYou(p, acc);
+  lastFix = { lat: p.lat, lng: p.lng, acc, t: Date.now() };
+  if (S.settings.follow && S.tracking) map.panTo(p);
+  if (!S.tracking || acc > 40) return;
+  const last = S.trail.length ? S.trail[S.trail.length - 1] : null;
+  if (last && GEO.dist(last, p) < 5) return;
+  if (last) {
+    const d = GEO.dist(last, p);
+    const dt = Math.max((Date.now() - last.t) / 1000, 1);
+    if (d / dt <= 8) S.stats.distM += d; /* ignore GPS teleports */
+  }
+  S.trail.push({ lat: p.lat, lng: p.lng, t: Date.now() });
+  if (S.trail.length > 12000) { S.trail = S.trail.filter((_, i) => i % 2 === 0); renderTrail(); }
+  else trailLine.addLatLng([p.lat, p.lng]);
+  markCovered(p, last);
+  updateHUD();
+  throttledSave();
+}
+
+let lastErrAt = 0;
+function gpsErr(err) {
+  const now = Date.now();
+  if (now - lastErrAt < 30000) return;
+  lastErrAt = now;
+  if (err && err.code === 1) toast('Location permission denied — allow it for this site in browser settings', 3200);
+  else toast('Weak GPS signal — still trying…', 2200);
+}
+
+async function requestWake() {
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { wakeLock = null; }
+}
+function releaseWake() {
+  try { if (wakeLock) wakeLock.release(); } catch (e) {}
+  wakeLock = null;
+}
+
+function setTrackUI() {
+  $('btnTrack').classList.toggle('rec', S.tracking);
+  $('btnTrack').textContent = S.tracking ? '■' : '●';
+  $('btnTrack').setAttribute('aria-label', S.tracking ? 'Stop tracking' : 'Start tracking');
+  updateHUD();
+}
+function startTrack() {
+  if (!('geolocation' in navigator)) { toast('This browser has no location support'); return; }
+  if (!window.isSecureContext) { toast('GPS needs HTTPS — see Help in the menu', 3500); return; }
+  S.tracking = true;
+  setTrackUI();
+  watchId = navigator.geolocation.watchPosition(onFix, gpsErr, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+  if (S.settings.wake) requestWake();
+  toast('Tracking on — keep the screen on while walking', 2400);
+}
+function stopTrack() {
+  S.tracking = false;
+  setTrackUI();
+  if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  releaseWake();
+  flushSave();
+  toast('Tracking off');
+}
+$('btnTrack').onclick = () => { if (S.tracking) stopTrack(); else startTrack(); };
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && S.tracking && S.settings.wake) requestWake();
+  if (document.visibilityState === 'hidden') flushSave();
+});
+window.addEventListener('pagehide', flushSave);
+
+/* follow + one-shot locate */
+$('btnFollow').onclick = () => {
+  S.settings.follow = !S.settings.follow;
+  saveSettings();
+  $('btnFollow').classList.toggle('on', S.settings.follow);
+  if (S.settings.follow) {
+    if (lastFix) map.panTo(lastFix);
+    else if (window.isSecureContext && 'geolocation' in navigator) map.locate({ setView: true, maxZoom: 17 });
+    else toast('GPS needs HTTPS — see Help in the menu', 3000);
+  }
+};
+map.on('dragstart', () => {
+  if (S.settings.follow) {
+    S.settings.follow = false;
+    saveSettings();
+    $('btnFollow').classList.remove('on');
+  }
+});
+map.on('locationfound', e => {
+  updateYou(e.latlng, e.accuracy);
+  lastFix = { lat: e.latlng.lat, lng: e.latlng.lng, acc: e.accuracy, t: Date.now() };
+});
+map.on('locationerror', () => {});
+
+/* quick pin at current GPS position */
+$('btnQuickPin').onclick = () => {
+  if (lastFix && (Date.now() - lastFix.t) < 60000) {
+    addPin({ lat: lastFix.lat, lng: lastFix.lng }, 'visited');
+  } else {
+    toast('No GPS fix yet — long-press the map to place a pin instead', 2600);
+  }
+};
+
+/* car helpers in the menu */
+$('btnParkGPS').onclick = () => {
+  $('menuPanel').hidden = true;
+  if (lastFix) { setCar(lastFix); map.panTo(lastFix); toast('Car parked at your position'); }
+  else toast('No GPS fix yet — long-press the map and choose Park car', 2800);
+};
+$('btnCenterCar').onclick = () => {
+  $('menuPanel').hidden = true;
+  if (S.car) map.setView([S.car.lat, S.car.lng], Math.max(map.getZoom(), 16));
+  else toast('No car set yet');
+};
+$('btnClearCar').onclick = () => { clearCar(); toast('Car cleared'); };
+
+/* ---- export / import ---- */
+function dateStamp() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+function csvEsc(s) { return '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"'; }
+$('btnCSV').onclick = () => {
+  const rows = [['status', 'address', 'notes', 'lat', 'lng', 'created', 'updated']];
+  Array.from(S.pins.values()).sort((a, b) => a.created - b.created).forEach(p => {
+    rows.push([
+      statusByKey[p.status].label, p.address, p.notes,
+      p.lat.toFixed(6), p.lng.toFixed(6),
+      new Date(p.created).toISOString(), new Date(p.updated).toISOString()
+    ]);
+  });
+  download('door-notes-' + dateStamp() + '.csv', rows.map(r => r.map(csvEsc).join(',')).join('\r\n'), 'text/csv');
+  toast('CSV exported');
+};
+$('btnBackup').onclick = () => {
+  const data = {
+    v: 1,
+    pins: Array.from(S.pins.values()).map(p => ({
+      id: p.id, lat: p.lat, lng: p.lng, status: p.status,
+      notes: p.notes, address: p.address, created: p.created, updated: p.updated
+    })),
+    car: S.car, perim: S.perim, route: S.route,
+    covered: Array.from(S.covered), trail: S.trail, stats: S.stats, settings: S.settings
+  };
+  download('route-planner-' + dateStamp() + '.json', JSON.stringify(data), 'application/json');
+  toast('Backup exported');
+};
+
+/* accepts this app's backups AND the old versions' bare pin arrays */
+const colorToStatus = {
+  '#000000': 'not_visited', '#111827': 'not_visited',
+  '#3498db': 'visited', '#f1c40f': 'follow_up',
+  '#2ecc71': 'wants', '#e74c3c': 'no_solicit'
+};
+$('btnImport').onclick = () => $('fileImport').click();
+$('fileImport').addEventListener('change', ev => {
+  const f = ev.target.files[0];
+  ev.target.value = '';
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const j = JSON.parse(r.result);
+      const arr = Array.isArray(j) ? j : (j.pins || []);
+      gPins.clearLayers();
+      S.pins.clear();
+      arr.forEach(o => {
+        const p = {
+          id: o.id || newId(),
+          lat: Number(o.lat), lng: Number(o.lng),
+          status: (o.status && statusByKey[o.status]) ? o.status
+                : (colorToStatus[String(o.color || '').toLowerCase()] || 'not_visited'),
+          notes: o.notes || '',
+          address: o.address || o.title || '',
+          created: o.created || Date.now(),
+          updated: o.updated || Date.now()
+        };
+        if (Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
+          attachPin(p);
+          S.pins.set(p.id, p);
+        }
+      });
+      if (!Array.isArray(j)) {
+        if (j.car && Number.isFinite(j.car.lat)) setCar(j.car);
+        if (Array.isArray(j.perim) && j.perim.length > 2) { S.perim = j.perim; Store.set(K('perim'), S.perim); renderPerim(); }
+        if (j.route) { S.route = j.route; Store.set(K('route'), S.route); }
+        if (Array.isArray(j.covered)) S.covered = new Set(j.covered);
+        if (Array.isArray(j.trail)) S.trail = j.trail;
+        if (j.stats && typeof j.stats.distM === 'number') S.stats = j.stats;
+        flushSave();
+        renderRoute();
+        renderTrail();
+      }
+      savePins();
+      updateHUD();
+      toast('Import complete');
+    } catch (e) {
+      toast('Import failed — that file is not a valid backup');
+    }
+  };
+  r.readAsText(f);
+});
+
+/* ---- clears & reset ---- */
+armConfirm($('btnClearWalked'), () => {
+  S.trail = [];
+  S.covered = new Set();
+  S.stats = { distM: 0 };
+  flushSave();
+  renderTrail();
+  gCovered.clearLayers();
+  coveredLines.clear();
+  updateHUD();
+  toast('Walked data cleared — fresh day');
+});
+armConfirm($('btnClearPins'), () => {
+  gPins.clearLayers();
+  S.pins.clear();
+  savePins();
+  updateHUD();
+  toast('Pins cleared');
+});
+armConfirm($('btnReset'), () => {
+  ['pins', 'car', 'perim', 'route', 'covered', 'trail', 'stats', 'osm', 'view', 'settings', 'coach'].forEach(k => Store.del(K(k)));
+  location.reload();
+});
+
+/* ---- boot ---- */
+(function boot() {
+  buildStatusRow();
+
+  $('tFollow').checked = S.settings.follow;
+  $('tWake').checked = S.settings.wake;
+  $('tFollow').onchange = e => {
+    S.settings.follow = e.target.checked;
+    saveSettings();
+    $('btnFollow').classList.toggle('on', S.settings.follow);
+  };
+  $('tWake').onchange = e => {
+    S.settings.wake = e.target.checked;
+    saveSettings();
+    if (S.tracking) { if (S.settings.wake) requestWake(); else releaseWake(); }
+  };
+  $('btnFollow').classList.toggle('on', S.settings.follow);
+
+  const setMode = m => {
+    S.settings.mode = m;
+    saveSettings();
+    $('modeStreets').classList.toggle('on', m === 'streets');
+    $('modeSweep').classList.toggle('on', m === 'sweep');
+  };
+  $('modeStreets').onclick = () => setMode('streets');
+  $('modeSweep').onclick = () => setMode('sweep');
+  setMode(S.settings.mode);
+
+  [['layRoute', 'route'], ['layCover', 'covered'], ['layTrail', 'trail']].forEach(([id, key]) => {
+    const el = $(id);
+    el.checked = S.settings.layers[key];
+    el.onchange = e => {
+      S.settings.layers[key] = e.target.checked;
+      saveSettings();
+      applyLayers();
+    };
+  });
+  applyLayers();
+
+  if (!window.isSecureContext) $('httpsNote').hidden = false;
+  if (!Store.persistent) toast("Preview mode — changes won't be saved here", 2600);
+  if (!Store.get(K('coach'), false)) {
+    $('coach').hidden = false;
+    $('coachClose').onclick = () => { $('coach').hidden = true; Store.set(K('coach'), true); };
+  }
+  setTrackUI();
+  updateHUD();
+})();
+</script>
+</body>
+</html>
